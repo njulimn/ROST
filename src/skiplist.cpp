@@ -7,7 +7,7 @@
 // #include <unistd.h>
 
 #define DEBUG 1
-#define Gm 5
+#define Gm 128
 
 ////////////////////////////////////
 
@@ -163,6 +163,8 @@ void skiplist::ComputeSpace(){
     while (x && x->forward[1] != this->header) {
         // cerr<<"node:"<<sizeof(*(x->forward[1]))<<endl;
         space+=(sizeof(*(x->forward[1])));
+        space+=((x->forward[1]->forward).capacity() * sizeof(Segment_pt*));
+        space+=((x->forward[1]->nodes).capacity() * sizeof(node));
         x = x->forward[1];
     }
     cerr<<"space size:"<<space<<endl;

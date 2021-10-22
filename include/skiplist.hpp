@@ -271,7 +271,7 @@ class Segment_pt :public Segment{
 
 		void show(){
 			cerr<<"Segment_pt level:"<<this->level<<" start:"<<this->start<<" stop:"<<this->stop<<" slope:"<<this->slope<<" intertectpt:"<<this->intercept<<endl;
-			cerr<<"node range:"<<nodes[0].key<<" "<<nodes[nodes.size()-1].key<<endl;
+			cerr<<"node count:"<<nodes.size()<<" node range:"<<nodes[0].key<<" "<<nodes[nodes.size()-1].key<<endl;
 		}
 
 };
