@@ -4,7 +4,7 @@
 #include <vector>
 #include <sstream>
 #include <string>
-#include "./skiplist2.hpp"
+#include "./skiplist.hpp"
 using namespace std;
 
 unsigned int readFromCSV(vector<snode> &data)
