@@ -298,10 +298,11 @@ class skiplist {
 
 		void setup(vector<snode> input);
 
+		node* Search(unsigned int key);
+
         void ShowNodeDis();
         void Dump();
-        // int Search(int k);
-        
+		        
         int RandLevel(){
             int NewLevel = 1;
             int P = p*100;

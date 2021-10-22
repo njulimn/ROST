@@ -7,6 +7,68 @@
 #include "./skiplist.hpp"
 using namespace std;
 
+
+bool check_file_test(char const *fileName)
+{
+    // 用 ifstream 来判断文件是否存在
+    ifstream testFile(fileName);
+    if(!testFile)
+    {
+        cerr << "file not exit" << endl;
+        return false;
+    }
+    else
+    {
+        cerr << "file exits" << endl;
+        return true;
+    }
+    return false;
+}
+
+bool write_into_file(char const *fileName, char const *content)
+{
+    ofstream out(fileName,ios::app);
+    // ofstream out;
+    // out.open(fileName);
+    if(!out.is_open())
+    {
+        cerr << "file not exit" << endl;
+        return false;
+    }
+    else
+    {
+        out << content;
+        // cerr << "write succeed" << endl;
+        out.close();
+        // usleep(100);
+        return true;
+    }
+    
+    return false;
+}
+
+bool generate_file_test(char const *fileName)
+{
+    ofstream out;
+    out.open(fileName);
+    // 判断文件是否已经打开
+    if(out.is_open())
+    {
+        cerr << "file created succeed" << endl;
+        out.close();
+        return true;
+    }
+    else
+    {
+        cerr << "file created failed" << endl;
+        out.close();
+        return false;
+    }
+    
+    out.close();
+    return false;
+}
+
 unsigned int readFromCSV(vector<snode> &data)
 {
     ifstream inFile("../static/exp_link50.csv", ios::in);

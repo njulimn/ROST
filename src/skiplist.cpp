@@ -1,5 +1,5 @@
 #pragma once
-#include "../include/read.hpp"
+#include "../include/skiplist.hpp"
 #include <fstream>
 #include <string>
 #include <algorithm>
@@ -7,69 +7,7 @@
 // #include <unistd.h>
 
 #define DEBUG 1
-
 #define Gm 5
-
-bool check_file_test(char const *fileName)
-{
-    // 用 ifstream 来判断文件是否存在
-    ifstream testFile(fileName);
-    if(!testFile)
-    {
-        cerr << "file not exit" << endl;
-        return false;
-    }
-    else
-    {
-        cerr << "file exits" << endl;
-        return true;
-    }
-    return false;
-}
-
-bool write_into_file(char const *fileName, char const *content)
-{
-    ofstream out(fileName,ios::app);
-    // ofstream out;
-    // out.open(fileName);
-    if(!out.is_open())
-    {
-        cerr << "file not exit" << endl;
-        return false;
-    }
-    else
-    {
-        out << content;
-        // cerr << "write succeed" << endl;
-        out.close();
-        // usleep(100);
-        return true;
-    }
-    
-    return false;
-}
-
-bool generate_file_test(char const *fileName)
-{
-    ofstream out;
-    out.open(fileName);
-    // 判断文件是否已经打开
-    if(out.is_open())
-    {
-        cerr << "file created succeed" << endl;
-        out.close();
-        return true;
-    }
-    else
-    {
-        cerr << "file created failed" << endl;
-        out.close();
-        return false;
-    }
-    
-    out.close();
-    return false;
-}
 
 ////////////////////////////////////
 
@@ -157,15 +95,13 @@ void skiplist::setup(vector<snode> input){
                 inputPart[l].value = inputPart[l].key;
             }
             // cerr<<"create new segment...";
-            Segment_pt* newSeg = new Segment_pt(inputPart,nodeLevel,seg[j]->start,seg[j]->stop,seg[j]->slope,seg[j]->intercept);
+            Segment_pt* newSeg = new Segment_pt(inputPart,nodeLevel,st,ed,seg[j]->slope,seg[j]->intercept);
             // cerr<<"new succeed..";
             nodeLevel = input[i].level;
             //insert
             for(int l = 1;l<=nodeLevel;l++){
                 newSeg->forward[l] = Update[l]->forward[l];
                 Update[l]->forward[l] = newSeg;
-            }
-            for(int l = 1;l<=nodeLevel;l++){
                 Update[l] = newSeg;
             }
             j++;
@@ -177,6 +113,48 @@ void skiplist::setup(vector<snode> input){
 
 }
 
+node* skiplist::Search(unsigned int key){
+    Segment_pt* x = this->header;
+    bool locate = false;
+    for(int i = this->level;i>=1;i--){
+        while (1)
+        {
+            unsigned int pred = x->forward[i]->slope*key+x->forward[i]->intercept;
+            if(pred < x->forward[i]->start){
+                return nullptr;
+            }
+            else if(pred > x->forward[i]->stop){
+                x = x->forward[i];
+            }
+            else{
+                locate = true;
+                break;
+            }
+        }
+        if(locate) break;        
+    }
+    if(locate){
+        x = x->forward[1];
+        //bineary search
+        int l=0,r=x->nodes.size()-1,mid;
+        while(l<=r){
+            mid = (l+r)>>1;
+            if(x->nodes[mid].key == key){
+                return &(x->nodes[mid]);
+            }
+            else if(x->nodes[mid].key > key){
+                r = mid-1;
+            }
+            else{
+                l = mid+1;
+            }
+        }
+    }
+    
+    return nullptr;
+
+}
+
 void skiplist::ShowNodeDis(){
     Segment_pt *x = this->header;
     vector<int> Count(this->level+1,0);
@@ -184,25 +162,4 @@ void skiplist::ShowNodeDis(){
         x->forward[1]->show();
         x = x->forward[1];
     }
-}
-
-int main()
-{
-    // node x;
-    // x.key = 1;
-    // x.value = 1;
-    // vector<node> m;
-    // m.push_back(x);
-    // Segment_pt* ma = new Segment_pt(m,12,1,5,1,0);
-
-    srand((int)time(0));
-    // vector<unsigned int> data_x;
-    vector<snode> data;
-    unsigned int MaxLevel = 0;
-    MaxLevel = readFromCSV(data);
-    // cerr<<"Max Level:"<<MaxLevel<<endl;
-    skiplist* list = new skiplist(MaxLevel);
-    list->setup(data);
-    list->ShowNodeDis();
-    
 }
