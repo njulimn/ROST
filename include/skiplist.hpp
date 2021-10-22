@@ -302,6 +302,8 @@ class skiplist {
 
         void ShowNodeDis();
         void Dump();
+
+		void ComputeSpace();
 		        
         int RandLevel(){
             int NewLevel = 1;

@@ -10,7 +10,7 @@ using namespace std;
 
 int main()
 {
-    ifstream inFile("../static/exp_link.csv", ios::in);
+    ifstream inFile("../static/exp_log2.csv", ios::in);
     if (!inFile)
     {
         cout << "打开文件失败！" << endl;

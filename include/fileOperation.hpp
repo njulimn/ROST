@@ -71,7 +71,7 @@ bool generate_file_test(char const *fileName)
 
 unsigned int readFromCSV(vector<snode> &data)
 {
-    ifstream inFile("../static/exp_link50.csv", ios::in);
+    ifstream inFile("../static/exp_log2.csv", ios::in);
     if (!inFile)
     {
         cout << "打开文件失败！" << endl;

@@ -59,7 +59,7 @@ void skiplist::setup(vector<snode> input){
 		seg.push_back(seg_res);
 	}
 #if DEBUG
-    // cerr<<"seg size:"<<seg.size()<<endl;
+    cerr<<"seg size:"<<seg.size()<<endl;
 	for (int i = 0; i < seg.size(); i++) {
 		cerr << seg[i]->start << " " << seg[i]->stop << " " << seg[i]->slope << " " << seg[i]->intercept << endl;
 	}
@@ -67,8 +67,10 @@ void skiplist::setup(vector<snode> input){
 #endif
     //insert segment into skiplist,考虑后面优化前面就整合
     vector<Segment_pt*> Update(this->MaxLevel+1);
-    
+
+#if DEBUG
     cerr<<"Updatevector"<<endl;
+#endif
 
     for(int i = 0;i<=this->MaxLevel;i++){
         Update[i] = this->header;
@@ -153,6 +155,17 @@ node* skiplist::Search(unsigned int key){
     
     return nullptr;
 
+}
+
+void skiplist::ComputeSpace(){
+    unsigned int space = 0;
+    Segment_pt *x = this->header;
+    while (x && x->forward[1] != this->header) {
+        // cerr<<"node:"<<sizeof(*(x->forward[1]))<<endl;
+        space+=(sizeof(*(x->forward[1])));
+        x = x->forward[1];
+    }
+    cerr<<"space size:"<<space<<endl;
 }
 
 void skiplist::ShowNodeDis(){
