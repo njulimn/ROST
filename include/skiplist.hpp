@@ -141,7 +141,7 @@ public:
 		if (this->state != GreedyState::Ready) {
 			return nullptr;
 		}
-		if (!this->rho_lower->AboveAssert(k) && this->rho_upper->BeblowAssert(k)) {
+		if (!(this->rho_lower->AboveAssert(k) && this->rho_upper->BeblowAssert(k))) {
 			//重新开一个段
 			Segment* current = this->CurrentSegment(k->x);
 			delete this->s0;
@@ -240,7 +240,7 @@ class Segment_pt :public Segment{
     public:
         vector<Segment_pt*> forward;
         unsigned level;
-        unsigned node_size;
+        // unsigned node_size;
         vector<node> nodes;//内部二分查找
 
         Segment_pt();
@@ -297,7 +297,7 @@ class skiplist {
 
 		void setup(vector<snode> input);
 
-		node* binearySearch(Segment_pt* x,unsigned int key);
+		node* binarySearch(Segment_pt* x,unsigned int key);
 		node* Search(unsigned int key);
 
 		void insert_static(vector<Segment_pt*> &Update,Segment* seg,unsigned int st,unsigned int ed,vector<node> input,int level);
