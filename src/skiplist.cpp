@@ -195,16 +195,15 @@ node* skiplist::binearySearch(Segment_pt* x,unsigned int key){
 
 node* skiplist::Search(unsigned int key){
     Segment_pt* x = this->header;
-    unsigned int pred;
+    // unsigned int pred;
     bool locate = false;
     for(int i = this->level;i>=1;i--){
-        while (1)
-        {
-            pred = x->forward[i]->slope*key+x->forward[i]->intercept;
-            if(pred < x->forward[i]->start){
+        while(1){
+            // pred = x->forward[i]->slope*key+x->forward[i]->intercept;
+            if(key < x->forward[i]->start){
                 return nullptr;
             }
-            else if(pred > x->forward[i]->stop){
+            else if(key > x->forward[i]->stop){
                 x = x->forward[i];
             }
             else{
