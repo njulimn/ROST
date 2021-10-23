@@ -147,7 +147,7 @@ void skiplist::setup(vector<snode> input){
                 inputPart[l].key = input[l+st].key;
                 inputPart[l].value = inputPart[l].key;
             }
-            this->insert_static(Update,seg_res,st,ed,inputPart,input[st].level);
+            this->insert_static(Update,seg_res,input[st].key,input[ed].key,inputPart,input[st].level);
             st = ed = i;
 		}
         else{
@@ -163,7 +163,7 @@ void skiplist::setup(vector<snode> input){
             inputPart[l].key = input[l+st].key;
             inputPart[l].value = inputPart[l].key;
         }
-        this->insert_static(Update,seg_res,st,ed,inputPart,input[st].level);
+        this->insert_static(Update,seg_res,input[st].key,UNINT_MAX,inputPart,input[st].level);
 	}
 #if DEBUG
     cerr<<"seg size:"<<seg.size()<<endl;
@@ -209,38 +209,22 @@ node* skiplist::Search(unsigned int key){
             }
             else{
                 locate = true;
+                x = x->forward[i];
                 break;
             }
         }
         if(locate) break;        
     }
     if(locate){
-        // cerr<<"locate key"<<key<<" in segement"<<endl;
-        // x->forward[1]->show(0);
-//由于存在+-误差，需要在+-gamma范围内的segment，待fix
         node* res = nullptr;
-        if(abs((long long)pred-x->forward[1]->start) < this->gamma && x!=this->header){
-            res = this->binearySearch(x,key);
-            if(res){
-                return res;
-            }
-        }
-        x = x->forward[1];
         res = this->binearySearch(x,key);
         if(res){
             return res;
         }
-        x = x->forward[1];
-        if(abs((long long)pred- x->stop) < this->gamma && x!=this->header){
-            res = this->binearySearch(x,key);
-            if(res){
-                return res;
-            }
-        }
     }
-    else{
-        //  cerr<<"locate key"<<key<<" fasle"<<endl;
-    }
+    // else{
+    //     //  cerr<<"locate key"<<key<<" fasle"<<endl;
+    // }
     
     return nullptr;
 
