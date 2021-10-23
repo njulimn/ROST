@@ -5,9 +5,16 @@
 #include <limits.h>
 #include <math.h>
 #include <cfloat>
+#include <fstream>
+#include <iomanip>
+#include <vector>
+#include <sstream>
+#include <string>
+// #include "./fileOperation.hpp"
 
 #define p 0.5
 #define UNINT_MAX 0xffffffff
+#define Epslion 1e-8
 
 using namespace std;
 
@@ -51,16 +58,12 @@ public:
 	}
 
 	Point* Intersection(Line* b) {
-		if (b->slope != this->slope) {
-			double x = (b->intercept - this->intercept) / (this->slope - b->slope);
-			double y = this->slope * x + this->intercept;
-			Point* res = new Point(x, y);
-			return res;
-		}
-		else
-		{
-			return nullptr;
-		}
+		double x,y;
+		double deta = this->slope - b->slope;
+		x = (b->intercept - this->intercept)/deta;
+		y = (this->slope * b->intercept - this->intercept*b->slope)/deta;
+		Point* res = new Point(x, y);
+		return res;
 	}
 
 	bool AboveAssert(Point* k) {
@@ -92,7 +95,7 @@ class Segment {
 class GreedyPLR {
 public:
 	GreedyState state = GreedyState::Need2;
-	double gamma;
+	int gamma;
 	Point* s0 = nullptr;
 	Point* s1 = nullptr;
 	Point* sint = nullptr;//point of intersection
@@ -102,7 +105,7 @@ public:
 
 	GreedyPLR();
 
-	GreedyPLR(double ga) { this->gamma = ga; }
+	GreedyPLR(int ga) { this->gamma = ga; }
 
 	void setup(Point* s0, Point* s1)
 	{
@@ -127,14 +130,11 @@ public:
 		double s_start = this->s0->x;
 		double s_stop = end;
 		double s_slope;
-		if (this->rho_upper->slope != this->rho_lower->slope) {
-			s_slope = (this->rho_lower->slope + this->rho_upper->slope) / 2.0;
-			// cerr << "current slope:" << s_slope << endl;
-			double s_intercept = this->sint->y - this->sint->x * s_slope;
-			res = new Segment(s_start, s_stop, s_slope, s_intercept);
-			return res;
-		}
-		return nullptr;
+		s_slope = (this->rho_lower->slope + this->rho_upper->slope) / 2.0;
+		// cerr << "current slope:" << s_slope << endl;
+		double s_intercept = this->sint->y - this->sint->x * s_slope;
+		res = new Segment(s_start, s_stop, s_slope, s_intercept);
+		return res;
 	}
 
 	Segment* Process_pt(Point* k) {
@@ -269,10 +269,7 @@ class Segment_pt :public Segment{
 			// cerr<<"new finish"<<endl;
         }
 
-		void show(){
-			cerr<<"Segment_pt level:"<<this->level<<" start:"<<this->start<<" stop:"<<this->stop<<" slope:"<<this->slope<<" intertectpt:"<<this->intercept<<endl;
-			cerr<<"node count:"<<nodes.size()<<" node range:"<<nodes[0].key<<" "<<nodes[nodes.size()-1].key<<endl;
-		}
+		void show(int w);
 
 };
 
@@ -282,9 +279,10 @@ class skiplist {
         int size;
         Segment_pt *header;
         int MaxLevel;
+		int gamma;
 
         skiplist();
-        skiplist(int MaxLevel){
+        skiplist(int MaxLevel,int gamma){
             int i;
             Segment_pt *header = new Segment_pt(MaxLevel,UNINT_MAX,UNINT_MAX,0,0);//(snode *)malloc(sizeof(struct snode));
             this->header = header;
@@ -294,11 +292,15 @@ class skiplist {
             this->level = 1;
             this->size = 0;
             this->MaxLevel = MaxLevel;
+			this->gamma = gamma;
         }
 
 		void setup(vector<snode> input);
 
+		node* binearySearch(Segment_pt* x,unsigned int key);
 		node* Search(unsigned int key);
+
+		void insert_static(vector<Segment_pt*> &Update,Segment* seg,unsigned int st,unsigned int ed,vector<node> input,int level);
 
         void ShowNodeDis();
         void Dump();
