@@ -179,7 +179,7 @@ void skiplist::setup(vector<snode> input){
 node* skiplist::binearySearch(Segment_pt* x,unsigned int key){
     int l=0,r=x->nodes.size()-1,mid;
     while(l<=r){
-        mid = (l+r)>>1;
+        mid = l+(r-l)/2;
         if(x->nodes[mid].key == key){
             return &(x->nodes[mid]);
         }
