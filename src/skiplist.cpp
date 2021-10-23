@@ -201,7 +201,7 @@ node* skiplist::Search(unsigned int key){
         while(1){
             // pred = x->forward[i]->slope*key+x->forward[i]->intercept;
             if(key < x->forward[i]->start){
-                return nullptr;
+                break;
             }
             else if(key > x->forward[i]->stop){
                 x = x->forward[i];
@@ -212,7 +212,7 @@ node* skiplist::Search(unsigned int key){
                 break;
             }
         }
-        if(locate) break;        
+        if(locate) break;       
     }
     if(locate){
         node* res = nullptr;
