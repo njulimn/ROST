@@ -10,6 +10,7 @@
 #include <vector>
 #include <sstream>
 #include <string>
+#include <map>
 // #include "./fileOperation.hpp"
 
 #define p 0.5
@@ -241,11 +242,13 @@ class Segment_pt :public Segment{
         vector<Segment_pt*> forward;
         unsigned level;
         // unsigned node_size;
-        vector<node> nodes;//内部二分查找
+        vector<node> nodes;
+		unsigned int fisrt_index;
 
         Segment_pt();
-		Segment_pt(int level,unsigned int strt,unsigned int stp,double slp,double interc):Segment(strt,stp,slp,interc){
+		Segment_pt(unsigned int stidx,int level,unsigned int strt,unsigned int stp,double slp,double interc):Segment(strt,stp,slp,interc){
 			// cerr<<"????????"<<endl;
+			this->fisrt_index = stidx;
             this->level = level;
             vector<Segment_pt*> new_seg(level+1);
             this->forward = new_seg;
@@ -255,9 +258,10 @@ class Segment_pt :public Segment{
 			// cerr<<"@@@@@"<<endl;
         }
 
-        Segment_pt(vector<node> input,int level,unsigned int strt,unsigned int stp,double slp,double interc):Segment(strt,stp,slp,interc)
+        Segment_pt(vector<node> input,unsigned int stidx,int level,unsigned int strt,unsigned int stp,double slp,double interc):Segment(strt,stp,slp,interc)
 		{
 			// cerr<<"????????"<<endl;
+			this->fisrt_index = stidx;
             this->level = level;
             vector<Segment_pt*> new_seg(level+1);
             this->forward = new_seg;
@@ -284,7 +288,7 @@ class skiplist {
         skiplist();
         skiplist(int MaxLevel,int gamma){
             int i;
-            Segment_pt *header = new Segment_pt(MaxLevel,UNINT_MAX,UNINT_MAX,0,0);//(snode *)malloc(sizeof(struct snode));
+            Segment_pt *header = new Segment_pt(UNINT_MAX,MaxLevel,UNINT_MAX,UNINT_MAX,0,0);//(snode *)malloc(sizeof(struct snode));
             this->header = header;
             // for (i = 0; i <= MaxLevel; i++) {
             //     header->forward[i] = this->header;
@@ -300,7 +304,7 @@ class skiplist {
 		node* binarySearch(Segment_pt* x,unsigned int key);
 		node* Search(unsigned int key);
 
-		void insert_static(vector<Segment_pt*> &Update,Segment* seg,unsigned int st,unsigned int ed,vector<node> input,int level);
+		void insert_static(vector<Segment_pt*> &Update,Segment* seg,unsigned int stidx,unsigned int st,unsigned int ed,vector<node> input,int level);
 
         void ShowNodeDis();
         void Dump();

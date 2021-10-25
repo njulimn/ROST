@@ -4,9 +4,10 @@
 #include <string>
 #include <algorithm>
 #include <time.h>
+#include <time.h>
 // #include <unistd.h>
 
-#define DEBUG 1
+#define DEBUG 0
 #define Gm 128
 
 
@@ -108,11 +109,8 @@ void verify_gamma(double gamma, vector<unsigned int> data, vector<Segment*>seg) 
 	}
 }
 
-void skiplist::insert_static(vector<Segment_pt*> &Update,Segment* seg,unsigned int st,unsigned int ed,vector<node> input,int level){
-    // cerr<<"create new segment...";
-    Segment_pt* newSeg = new Segment_pt(input,level,st,ed,seg->slope,seg->intercept);
-    // cerr<<"new succeed..";
-    // nodeLevel = input[i].level;
+void skiplist::insert_static(vector<Segment_pt*> &Update,Segment* seg,unsigned int stidx,unsigned int st,unsigned int ed,vector<node> input,int level){
+    Segment_pt* newSeg = new Segment_pt(input,stidx,level,st,ed,seg->slope,seg->intercept);
     //insert
     if(level > this->level){
         for(int l = level;l>this->level;l--){
@@ -125,6 +123,7 @@ void skiplist::insert_static(vector<Segment_pt*> &Update,Segment* seg,unsigned i
         Update[l]->forward[l] = newSeg;
         Update[l] = newSeg;
     }
+    this->size++;
 }
 
 void skiplist::setup(vector<snode> input){
@@ -147,7 +146,7 @@ void skiplist::setup(vector<snode> input){
                 inputPart[l].key = input[l+st].key;
                 inputPart[l].value = inputPart[l].key;
             }
-            this->insert_static(Update,seg_res,input[st].key,input[ed].key,inputPart,input[st].level);
+            this->insert_static(Update,seg_res,st,input[st].key,input[ed].key,inputPart,input[st].level);
             st = ed = i;
 		}
         else{
@@ -163,10 +162,11 @@ void skiplist::setup(vector<snode> input){
             inputPart[l].key = input[l+st].key;
             inputPart[l].value = inputPart[l].key;
         }
-        this->insert_static(Update,seg_res,input[st].key,UNINT_MAX,inputPart,input[st].level);
+        this->insert_static(Update,seg_res,st,input[st].key,UNINT_MAX,inputPart,input[st].level);
 	}
-#if DEBUG
     cerr<<"seg size:"<<seg.size()<<endl;
+#if DEBUG
+    
 	for (int i = 0; i < seg.size(); i++) {
 		cerr << seg[i]->start << " " << seg[i]->stop << " " << seg[i]->slope << " " << seg[i]->intercept << endl;
 	}
@@ -176,8 +176,10 @@ void skiplist::setup(vector<snode> input){
 
 }
 
-node* skiplist::binearySearch(Segment_pt* x,unsigned int key){
-    int l=0,r=x->nodes.size()-1,mid;
+node* skiplist::binarySearch(Segment_pt* x,unsigned int key){
+    int pred = x->slope*key+x->intercept;
+    int l=max((pred-this->gamma-(int)x->fisrt_index),0);
+    int r=min((int)x->nodes.size()-1,pred+this->gamma-(int)x->fisrt_index),mid;
     while(l<=r){
         mid = l+(r-l)/2;
         if(x->nodes[mid].key == key){
@@ -196,35 +198,19 @@ node* skiplist::binearySearch(Segment_pt* x,unsigned int key){
 node* skiplist::Search(unsigned int key){
     Segment_pt* x = this->header;
     // unsigned int pred;
-    bool locate = false;
     for(int i = this->level;i>=1;i--){
-        while(1){
-            // pred = x->forward[i]->slope*key+x->forward[i]->intercept;
-            if(key < x->forward[i]->start){
-                break;
-            }
-            else if(key > x->forward[i]->stop){
-                x = x->forward[i];
-            }
-            else{
-                locate = true;
-                x = x->forward[i];
-                break;
+        while(key > x->forward[i]->stop){
+            x = x->forward[i];
+        }
+        if(key >= x->forward[i]->start){
+            x = x->forward[i];
+            node* res = nullptr;
+            res = this->binarySearch(x,key);
+            if(res){
+                return res;
             }
         }
-        if(locate) break;       
-    }
-    if(locate){
-        node* res = nullptr;
-        res = this->binearySearch(x,key);
-        if(res){
-            return res;
-        }
-    }
-    // else{
-    //     //  cerr<<"locate key"<<key<<" fasle"<<endl;
-    // }
-    
+    }    
     return nullptr;
 
 }
@@ -244,10 +230,49 @@ void skiplist::ComputeSpace(){
 
 void skiplist::ShowNodeDis(){
     Segment_pt *x = this->header;
+    char filePath[] = "./log/exp_log_dis.txt";
+    char filePath2[] = "./log/exp_log_plr.csv";
+    // char filePath2[] = "./log/exp_log_dis2.txt";
     vector<int> Count(this->level+1,0);
+    map<int,int> nodemap;
+    vector<vector<int>> jump(this->level+1,vector<int>(1));
+    int i = 1;
     while (x && x->forward[1] != this->header) {
         x->forward[1]->show(1);
+        if(!Count[x->forward[1]->level]){
+            jump[x->forward[1]->level][0] = i;
+        }
+        else{
+            jump[x->forward[1]->level].push_back(i);
+        }
+        Count[x->forward[1]->level]++;
+        if(!nodemap.count(x->forward[1]->nodes.size())){
+            nodemap[x->forward[1]->nodes.size()] = 1;
+        }
+        else{
+            nodemap[x->forward[1]->nodes.size()]++;
+        }
+        i++;
         x = x->forward[1];
+    }
+    
+    string s1 = "NodeDistribution---------------------\nthe number of segment:"+to_string (this->size)+"\n";
+    write_into_file(filePath,s1.c_str());
+
+    map<int,int>::iterator it;
+    for(it = nodemap.begin();it!=nodemap.end();it++){
+        string sit = to_string((*it).first)+","+to_string((*it).second)+"\n";
+        write_into_file(filePath2,sit.c_str());
+    }
+
+    for(int i=1;i<=this->level;i++){
+        string s2 = "level "+to_string (i)+",segment count "+to_string(Count[i])+"\n";
+        write_into_file(filePath,s2.c_str());
+        for(int j = 0;j<jump[i].size();j++){
+            string s3 = to_string(jump[i][j])+"\t";
+            write_into_file(filePath,s3.c_str());
+        }
+        write_into_file(filePath,"\n");
     }
 }
 
@@ -255,13 +280,17 @@ void Segment_pt::show(int w){
     char filePath[] = "./log/exp_log.txt";
     string s1 ="Segment_pt level:"+to_string(this->level)+" start:"+to_string(this->start)+" stop:"+to_string(this->stop)+" slope:"+to_string(this->slope)+" intertectpt:"+to_string(this->intercept)+"\n";
     string s2 = "node count:"+to_string(nodes.size())+" node range:"+to_string(nodes[0].key)+" "+to_string(nodes[nodes.size()-1].key)+"\n";
-    if(w){
+    if(w==1){
         write_into_file(filePath,s1.c_str());
         write_into_file(filePath,s2.c_str());
     }
-    else{
-        cerr<<s1<<endl;
+    else if(w==0){
+        cerr<<s1;
         cerr<<s2<<endl;
+    }
+    else if(w == 2){
+        string s3 ="Segment_pt level:"+to_string(this->level)+" start:"+to_string(this->start)+" stop:"+to_string(this->stop)+" node count:"+to_string(nodes.size())+"\n";
+        cerr<<s3;
     }
     
 
