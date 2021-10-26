@@ -144,10 +144,13 @@ public:
 		}
 		if (!(this->rho_lower->AboveAssert(k) && this->rho_upper->BeblowAssert(k))) {
 			//重新开一个段
-			Segment* current = this->CurrentSegment(k->x);
-			delete this->s0;
+			Segment* current = this->CurrentSegment(this->s_last->x);//(k->x);
+			// delete this->s0;
+			k->y = 0;
 			this->s0 = nullptr;
 			this->s0 = k;
+			this->s_last = nullptr;
+			this->s_last = k;
 			this->state = GreedyState::Need1;
 
 			return current;
@@ -171,31 +174,34 @@ public:
 
 	Segment* Process(double x, double y) {
 		//delete this->s_last;
-		this->s_last = nullptr;
-		this->s_last = new Point(x, y);
 		Segment* res = nullptr;
+		Point* newp = new Point(x, y);
 		// cerr<<"in process:old state "<<this->state<<endl;
 		GreedyState newState = this->state;
 		
 		// cerr<<"new state(old)："<<newState;
 		// cerr<<"GreedyState::Need2"<<GreedyState::Need2<<endl;
 		if (this->state == GreedyState::Need2) {
-			delete this->s0;
 			this->s0 = nullptr;
-			this->s0 = this->s_last;
+			this->s_last = nullptr;
+			newp->y = 0;
+			this->s_last = newp;
+			this->s0 = newp;
 			newState = GreedyState::Need1;
 			this->state = GreedyState::Need1;
 		}
 		else if (this->state == GreedyState::Need1) {
 			//delete this->s1;
 			this->s1 = nullptr;
-			this->s1 = this->s_last;
+			this->s_last = nullptr;
+			this->s_last = newp;
+			this->s1 = newp;
 			this->setup(this->s0, this->s1);
 			newState = GreedyState::Ready;
 			this->state = GreedyState::Ready;
 		}
 		else if (this->state == GreedyState::Ready) {
-			res = this->Process_pt(this->s_last);
+			res = this->Process_pt(newp);
 			if (res != nullptr) {
 				newState = GreedyState::Need1;
 				this->state = GreedyState::Need1;
@@ -243,12 +249,12 @@ class Segment_pt :public Segment{
         unsigned level;
         // unsigned node_size;
         vector<node> nodes;
-		unsigned int fisrt_index;
+		// unsigned int fisrt_index;
 
         Segment_pt();
-		Segment_pt(unsigned int stidx,int level,unsigned int strt,unsigned int stp,double slp,double interc):Segment(strt,stp,slp,interc){
+		Segment_pt(int level,unsigned int strt,unsigned int stp,double slp,double interc):Segment(strt,stp,slp,interc){
 			// cerr<<"????????"<<endl;
-			this->fisrt_index = stidx;
+			// this->fisrt_index = stidx;
             this->level = level;
             vector<Segment_pt*> new_seg(level+1);
             this->forward = new_seg;
@@ -258,10 +264,10 @@ class Segment_pt :public Segment{
 			// cerr<<"@@@@@"<<endl;
         }
 
-        Segment_pt(vector<node> input,unsigned int stidx,int level,unsigned int strt,unsigned int stp,double slp,double interc):Segment(strt,stp,slp,interc)
+        Segment_pt(vector<node> input,int level,unsigned int strt,unsigned int stp,double slp,double interc):Segment(strt,stp,slp,interc)
 		{
 			// cerr<<"????????"<<endl;
-			this->fisrt_index = stidx;
+			// this->fisrt_index = stidx;
             this->level = level;
             vector<Segment_pt*> new_seg(level+1);
             this->forward = new_seg;
@@ -288,7 +294,7 @@ class skiplist {
         skiplist();
         skiplist(int MaxLevel,int gamma){
             int i;
-            Segment_pt *header = new Segment_pt(UNINT_MAX,MaxLevel,UNINT_MAX,UNINT_MAX,0,0);//(snode *)malloc(sizeof(struct snode));
+            Segment_pt *header = new Segment_pt(MaxLevel,UNINT_MAX,UNINT_MAX,0,0);//(snode *)malloc(sizeof(struct snode));
             this->header = header;
             // for (i = 0; i <= MaxLevel; i++) {
             //     header->forward[i] = this->header;
@@ -304,7 +310,7 @@ class skiplist {
 		node* binarySearch(Segment_pt* x,unsigned int key);
 		node* Search(unsigned int key);
 
-		void insert_static(vector<Segment_pt*> &Update,Segment* seg,unsigned int stidx,unsigned int st,unsigned int ed,vector<node> input,int level);
+		void insert_static(vector<Segment_pt*> &Update,Segment* seg,unsigned int st,unsigned int ed,vector<node> input,int level);
 
         void ShowNodeDis();
         void Dump();
