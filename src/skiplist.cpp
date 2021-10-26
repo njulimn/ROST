@@ -109,8 +109,8 @@ void verify_gamma(double gamma, vector<unsigned int> data, vector<Segment*>seg) 
 	}
 }
 
-void skiplist::insert_static(vector<Segment_pt*> &Update,Segment* seg,unsigned int stidx,unsigned int st,unsigned int ed,vector<node> input,int level){
-    Segment_pt* newSeg = new Segment_pt(input,stidx,level,st,ed,seg->slope,seg->intercept);
+void skiplist::insert_static(vector<Segment_pt*> &Update,Segment* seg,unsigned int st,unsigned int ed,vector<node> input,int level){
+    Segment_pt* newSeg = new Segment_pt(input,level,st,ed,seg->slope,seg->intercept);
     //insert
     if(level > this->level){
         for(int l = level;l>this->level;l--){
@@ -138,7 +138,7 @@ void skiplist::setup(vector<snode> input){
     vector<Segment*> seg;
     for (int i = 0; i < input.size(); i++) {
 		Segment* seg_res = nullptr;
-		seg_res = plr->Process(input[i].key, i);
+		seg_res = plr->Process(input[i].key, i-st);
 		if(seg_res) {
             seg.push_back(seg_res);
             vector<node> inputPart(ed-st+1);
@@ -146,7 +146,7 @@ void skiplist::setup(vector<snode> input){
                 inputPart[l].key = input[l+st].key;
                 inputPart[l].value = inputPart[l].key;
             }
-            this->insert_static(Update,seg_res,st,input[st].key,input[ed].key,inputPart,input[st].level);
+            this->insert_static(Update,seg_res,input[st].key,input[ed].key,inputPart,input[st].level);
             st = ed = i;
 		}
         else{
@@ -162,7 +162,7 @@ void skiplist::setup(vector<snode> input){
             inputPart[l].key = input[l+st].key;
             inputPart[l].value = inputPart[l].key;
         }
-        this->insert_static(Update,seg_res,st,input[st].key,UNINT_MAX,inputPart,input[st].level);
+        this->insert_static(Update,seg_res,input[st].key,UNINT_MAX,inputPart,input[st].level);
 	}
     cerr<<"seg size:"<<seg.size()<<endl;
 #if DEBUG
@@ -178,8 +178,8 @@ void skiplist::setup(vector<snode> input){
 
 node* skiplist::binarySearch(Segment_pt* x,unsigned int key){
     int pred = x->slope*key+x->intercept;
-    int l=max((pred-this->gamma-(int)x->fisrt_index),0);
-    int r=min((int)x->nodes.size()-1,pred+this->gamma-(int)x->fisrt_index),mid;
+    int l=max((pred-this->gamma),0);
+    int r=min((int)x->nodes.size()-1,pred+this->gamma),mid;
     while(l<=r){
         mid = l+(r-l)/2;
         if(x->nodes[mid].key == key){

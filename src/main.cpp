@@ -5,15 +5,17 @@
 #include <algorithm>
 #include <time.h>
 
-#define MaxL 4
-#define NUMBERDATA 5000
+#define NUMBERDATA 1000000
+#define MaxL (int)(log(NUMBERDATA)/log(2))
 #define Gma 128
+#define Verify 0
 
 using namespace std;
 
 int length;
 vector<snode> dataInput;
 int MaxLevel = 0;
+vector<snode> nofind;
 
 unsigned int readFromCSV(vector<snode> &data)
 {
@@ -70,7 +72,7 @@ void GetData()
     int length = 0;
     srand((int)time(0));
     unsigned int *dataIoT;
-    std::ifstream inF("E:\\skiplistExp\\iotdeleteZ.bin", std::ios::binary);
+    std::ifstream inF("../../../datasets/iotdeleteZ.bin", std::ios::binary);
     inF.seekg(0, inF.end);
     length = inF.tellg();
     inF.seekg(0, inF.beg);
@@ -117,17 +119,13 @@ void ExpSearch(skiplist* list){
     int bound = NUMBERDATA;
     cerr<<"bound"<<bound<<endl;
     int nofindcnt = 0;
+    start = clock();
     for (int i = 0; i < bound; i++) {
-        start = clock();
         node* res = list->Search(dataInput[i].key);
-        end = clock();
-        if(res == nullptr || res->key != dataInput[i].key){
-            // cerr<<"not find"<<dataInput[i].key<<endl;
-            nofindcnt++;
-        }
-        sumTime +=(double(end-start)/CLOCKS_PER_SEC);
     }
-    cerr<<"no find cnt:"<<nofindcnt<<endl;
+    end = clock();
+    sumTime =(double(end-start)/CLOCKS_PER_SEC);
+    // cerr<<"no find cnt:"<<nofindcnt<<endl;
     cerr<<"Search time = "<<sumTime<<"s"<<endl;  //输出时间（单位：ｓ）
 }
 
@@ -145,32 +143,41 @@ int main(){
     list->ComputeSpace();
     //search test
     ExpSearch(list);
-
+#if Verify
     cerr<<"verify:"<<endl;
-    for (int j = 0; j < 10; j++) {
-        cerr<<"data "<<dataInput[j].key<<":"<<endl;
-        Segment_pt* x = list->header;
-        bool locate = false;
-        unsigned int pred;
-        for(int i = list->level;i>=1;i--){
-            while (1)
-            {
-                pred = x->forward[i]->slope*dataInput[j].key+x->forward[i]->intercept;
-                if(pred < x->forward[i]->start){
-                    // cerr<<"data "<<dataInput[j].key<<"not in range"<<endl;
-                    break;
-                }
-                else if(pred > x->forward[i]->stop){
-                    x = x->forward[i];
-                }
-                else{
-                    locate = true;
-                    cerr<<"pred :"<<pred<<"\treal:"<<j<<endl;
-                    break;
-                }
-            }
-            if(locate) break;        
+    int error = 0;
+    Segment_pt* seg1 = list->header;
+    for(int i = 0;i<list->size;i++){
+        seg1 = seg1->forward[1];
+        // cerr<<"start index:"<<seg1->fisrt_index<<endl;
+    int bound = seg1->nodes.size();//min(4,(int)nofind.size());
+    for (int j = 0; j < bound; j++) {
+        unsigned int key = seg1->nodes[j].key;
+        // cerr<<"data: "<<key;
+        int pred = seg1->slope*key+seg1->intercept;
+        // cerr<<"\tpred:"<<pred<<"\treal:"<<j<<endl;
+        if(abs(pred-j)> 2*Gma){
+            error++;
         }
+        // Segment_pt* x = list->header;
+        // bool locate = false;
+        // unsigned int pred;
+        // for(int i = list->level;i>=1;i--){
+        //     while(nofind[j].key > x->forward[i]->stop){
+        //         cerr<<"->\t";
+        //         x = x->forward[i];
+        //     }
+        //     if(nofind[j].key >= x->forward[i]->start){
+        //         x = x->forward[i];
+        //         cerr<<"pred :"<<pred<<"\treal:"<<nofind[j].level<<endl;
+        //         break;
+        //     }
+        //     cerr<<"down\t";
+        // }
+        // cerr<<endl;
     }
+    cerr<<"error:"<<error<<endl;
+    }
+#endif
     return 0;
 }
