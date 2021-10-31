@@ -5,7 +5,7 @@
 #include <algorithm>
 #include <time.h>
 
-#define NUMBERDATA 1000000
+#define NUMBERDATA 100000
 #define MaxL (int)(log(NUMBERDATA)/log(2))
 #define Gma 128
 #define Verify 0
