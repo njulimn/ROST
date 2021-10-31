@@ -245,10 +245,11 @@ typedef struct snode{
 
 class Segment_pt :public Segment{
     public:
-        vector<Segment_pt*> forward;
+        // vector<Segment_pt*> forward;
+		Segment_pt** forward;
         unsigned level;
-        // unsigned node_size;
-        vector<node> nodes;
+        int node_size;
+        // vector<node> nodes;
 		// unsigned int fisrt_index;
 
         Segment_pt();
@@ -256,26 +257,29 @@ class Segment_pt :public Segment{
 			// cerr<<"????????"<<endl;
 			// this->fisrt_index = stidx;
             this->level = level;
-            vector<Segment_pt*> new_seg(level+1);
-            this->forward = new_seg;
+            // vector<Segment_pt*> new_seg(level+1);
+			this->forward = (Segment_pt**)malloc(sizeof(Segment_pt*)*(level+1));
+            // this->forward = new_seg;
             for(int i=1;i<=level;i++){
                 this->forward[i] = this;
             }
 			// cerr<<"@@@@@"<<endl;
         }
 
-        Segment_pt(vector<node> input,int level,unsigned int strt,unsigned int stp,double slp,double interc):Segment(strt,stp,slp,interc)
+        Segment_pt(int nodeSize,int level,unsigned int strt,unsigned int stp,double slp,double interc):Segment(strt,stp,slp,interc)
 		{
 			// cerr<<"????????"<<endl;
 			// this->fisrt_index = stidx;
             this->level = level;
-            vector<Segment_pt*> new_seg(level+1);
-            this->forward = new_seg;
+            // vector<Segment_pt*> new_seg(level+1);
+            // this->forward = new_seg;
+			this->forward = (Segment_pt**)malloc(sizeof(Segment_pt*)*(level+1));
             for(int i=1;i<=level;i++){
                 this->forward[i] = this;
             }
-			nodes.resize(input.size());
-			nodes.assign(input.begin(),input.end());
+			this->node_size = nodeSize;
+			// nodes.resize(input.size());
+			// nodes.assign(input.begin(),input.end());
 			// cerr<<"new finish"<<endl;
         }
 
@@ -310,7 +314,7 @@ class skiplist {
 		node* binarySearch(Segment_pt* x,unsigned int key);
 		node* Search(unsigned int key);
 
-		void insert_static(vector<Segment_pt*> &Update,Segment* seg,unsigned int st,unsigned int ed,vector<node> input,int level);
+		void insert_static(vector<Segment_pt*> &Update,Segment* seg,unsigned int st,unsigned int ed,node* input,int size,int level);
 
         void ShowNodeDis();
         void Dump();
