@@ -1,2 +1,0 @@
-Insert time:0.000036
-Query time:0.000017
