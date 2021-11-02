@@ -5,10 +5,11 @@
 #include <algorithm>
 #include <time.h>
 
-#define NUMBERDATA 1000000
+#define NUMBERDATA 5000000
 #define MaxL (int)(log(NUMBERDATA)/log(2))
 #define Gma 128
 #define Verify 0
+#define NOFINDDEBUG 0
 
 using namespace std;
 
@@ -117,15 +118,26 @@ void ExpSearch(skiplist* list){
     clock_t start,end;
     double sumTime = 0;
     int bound = NUMBERDATA;
-    cerr<<"bound"<<bound<<endl;
+    cerr<<"search bound"<<bound<<endl;
     int nofindcnt = 0;
     start = clock();
     for (int i = 0; i < bound; i++) {
         node* res = list->Search(dataInput[i].key);
+#if NOFINDDEBUG
+        if(!res || res->key!=dataInput[i].key){
+            nofindcnt++;
+            snode x;
+            x.key = dataInput[i].key;
+            x.level = i;
+            nofind.push_back(x);
+        }
+#endif
     }
     end = clock();
     sumTime =(double(end-start)/CLOCKS_PER_SEC);
-    // cerr<<"no find cnt:"<<nofindcnt<<endl;
+#if NOFINDDEBUG
+    cerr<<"no find cnt:"<<nofindcnt<<endl;
+#endif
     cerr<<"Search time = "<<sumTime<<"s"<<endl;  //输出时间（单位：ｓ）
 }
 
@@ -143,40 +155,76 @@ int main(){
     list->ComputeSpace();
     //search test
     ExpSearch(list);
+
 #if Verify
     cerr<<"verify:"<<endl;
     int error = 0;
     Segment_pt* seg1 = list->header;
-    for(int i = 0;i<list->size;i++){
+    for(int i = 0;i<1;i++){
         seg1 = seg1->forward[1];
-        // cerr<<"start index:"<<seg1->fisrt_index<<endl;
-    int bound = seg1->nodes.size();//min(4,(int)nofind.size());
-    for (int j = 0; j < bound; j++) {
-        unsigned int key = seg1->nodes[j].key;
-        // cerr<<"data: "<<key;
-        int pred = seg1->slope*key+seg1->intercept;
-        // cerr<<"\tpred:"<<pred<<"\treal:"<<j<<endl;
-        if(abs(pred-j)> 2*Gma){
-            error++;
+        seg1->show(0);
+        cerr<<"start index:"<<seg1->nodes[0].key<<endl;
+        int bound = seg1->node_size;//min(4,(int)nofind.size());
+        for (int j = 0; j < min(10,bound); j++) {
+            unsigned int key = seg1->nodes[j].key;
+            cerr<<"data: "<<key;
+            double pred = seg1->slope*key;
+            cerr<<"\tslope"<<seg1->slope<<"*key = "<<pred<<"\tintercept:"<<seg1->intercept;
+            pred+=seg1->intercept;
+            cerr<<"\tpred:"<<pred<<"\treal:"<<j<<endl;
+            if(abs(pred-j)> 2*Gma){
+                error++;
+                cerr<<abs(pred-j)<<"\t";
+            }
         }
-        // Segment_pt* x = list->header;
-        // bool locate = false;
-        // unsigned int pred;
-        // for(int i = list->level;i>=1;i--){
-        //     while(nofind[j].key > x->forward[i]->stop){
-        //         cerr<<"->\t";
-        //         x = x->forward[i];
-        //     }
-        //     if(nofind[j].key >= x->forward[i]->start){
-        //         x = x->forward[i];
-        //         cerr<<"pred :"<<pred<<"\treal:"<<nofind[j].level<<endl;
-        //         break;
-        //     }
-        //     cerr<<"down\t";
-        // }
-        // cerr<<endl;
     }
     cerr<<"error:"<<error<<endl;
+
+#endif
+
+#if NOFINDDEBUG
+    cerr<<"NOFINDDEBUG:"<<endl;
+    int error = 0;
+    Segment_pt* seg1 = list->header;
+
+    for(int i = 0;i<min(4,(int)nofind.size());i++){
+        Segment_pt* x = list->header;
+        // unsigned int pred;
+        unsigned key = nofind[i].key;
+        for(int i = list->level;i>=1;i--){
+            int f = 0;
+            while(key > x->forward[i]->stop){
+                x = x->forward[i];
+            }
+            if(key >= x->forward[i]->start){
+                cerr<<"key "<<key<<"locate in"<<endl;
+                x = x->forward[i];
+                x->show(0);
+                int pred = x->slope*key+x->intercept;
+                int l=max((pred-list->gamma),0);
+                // node* data = Seg2Data[x];
+                int r=min(x->node_size-1,pred+list->gamma),mid;
+                
+                while(l<=r){
+                    mid = l+(r-l)/2;
+                    if(x->nodes[mid].key == key){
+                        cerr<<"find \n";
+                        f = 1;
+                        break;
+                    }
+                    else if(x->nodes[mid].key > key){
+                        r = mid-1;
+                    }
+                    else{
+                        l = mid+1;
+                    }
+                }
+
+                if(f){
+                    break;
+                }
+            }
+        }    
     }
 #endif
     return 0;

@@ -7,10 +7,10 @@
 #include <time.h>
 // #include <unistd.h>
 
-#define DEBUG 0
-#define Gm 128
+#define DEBUG 0 
+// #define Gm 128
 
-map<Segment_pt*,node*> Seg2Data;
+// map<Segment_pt*,node*> Seg2Data;
 
 bool check_file_test(char const *fileName)
 {
@@ -111,7 +111,7 @@ void verify_gamma(double gamma, vector<unsigned int> data, vector<Segment*>seg) 
 }
 
 void skiplist::insert_static(vector<Segment_pt*> &Update,Segment* seg,unsigned int st,unsigned int ed,node* input,int size,int level){
-    Segment_pt* newSeg = new Segment_pt(size,level,st,ed,seg->slope,seg->intercept);
+    Segment_pt* newSeg = new Segment_pt(size,input,level,st,ed,seg->slope,seg->intercept);
     //insert
     if(level > this->level){
         for(int l = level;l>this->level;l--){
@@ -124,7 +124,7 @@ void skiplist::insert_static(vector<Segment_pt*> &Update,Segment* seg,unsigned i
         Update[l]->forward[l] = newSeg;
         Update[l] = newSeg;
     }
-    Seg2Data[newSeg] = input;
+    // Seg2Data[newSeg] = input;
     this->size++;
 }
 
@@ -136,7 +136,9 @@ void skiplist::setup(vector<snode> input){
     }
     int st = 0,ed =0;
 
-    GreedyPLR* plr = new GreedyPLR(Gm);
+    srand((int)time(0));
+
+    GreedyPLR* plr = new GreedyPLR(this->gamma);
     vector<Segment*> seg;
     vector<int> segment_stIndex;
     for (int i = 0; i < input.size(); i++) {
@@ -164,6 +166,7 @@ void skiplist::setup(vector<snode> input){
         // this->insert_static(Update,seg_res,input[st].key,UNINT_MAX,inputPart,input[st].level);
 	}
     cerr<<"seg size:"<<seg.size()<<endl;
+    this->MaxLevel = (log(seg.size())/log(2));
 
     //segment_data = (int**)malloc(sizeof(int*)*seg.size());//申请seg.size个空间存储每段数据的数组首地址
 
@@ -180,7 +183,8 @@ void skiplist::setup(vector<snode> input){
             data_segement[l].key = input[l+st].key;
             data_segement[l].value = data_segement[l].key;
         }
-        this->insert_static(Update,seg_res,input[st].key,input[ed].key,data_segement,ed-st+1,input[st].level);
+        int level = this->RandLevel();
+        this->insert_static(Update,seg[i],input[st].key,input[ed].key,data_segement,ed-st+1,level);
     }
 
 #if DEBUG
@@ -197,14 +201,14 @@ void skiplist::setup(vector<snode> input){
 node* skiplist::binarySearch(Segment_pt* x,unsigned int key){
     int pred = x->slope*key+x->intercept;
     int l=max((pred-this->gamma),0);
-    node* data = Seg2Data[x];
+    // node* data = Seg2Data[x];
     int r=min(x->node_size-1,pred+this->gamma),mid;
     while(l<=r){
         mid = l+(r-l)/2;
-        if(data[mid].key == key){
-            return &(data[mid]);
+        if(x->nodes[mid].key == key){
+            return &(x->nodes[mid]);
         }
-        else if(data[mid].key > key){
+        else if(x->nodes[mid].key > key){
             r = mid-1;
         }
         else{
@@ -245,7 +249,7 @@ void skiplist::ComputeSpace(){
         space+=((x->forward[1]->node_size) * sizeof(node));
         x = x->forward[1];
     }
-    space+=( (sizeof(Segment_pt*)+sizeof(node*) )*Seg2Data.size() );
+    // space+=( (sizeof(Segment_pt*)+sizeof(node*) )*Seg2Data.size() );
 
     cerr<<"space size:"<<space<<endl;
 }
@@ -301,7 +305,7 @@ void skiplist::ShowNodeDis(){
 void Segment_pt::show(int w){
     char filePath[] = "./log/exp_log.txt";
     string s1 ="Segment_pt level:"+to_string(this->level)+" start:"+to_string(this->start)+" stop:"+to_string(this->stop)+" slope:"+to_string(this->slope)+" intertectpt:"+to_string(this->intercept)+"\n";
-    string s2 = "node count:"+to_string(this->node_size)+" node range:"+to_string(Seg2Data[this][0].key)+" "+to_string(Seg2Data[this][this->node_size-1].key)+"\n";
+    string s2 = "node count:"+to_string(this->node_size)+" node range:"+to_string(this->nodes[0].key)+" "+to_string(this->nodes[this->node_size-1].key)+"\n";
     if(w==1){
         write_into_file(filePath,s1.c_str());
         write_into_file(filePath,s2.c_str());
