@@ -214,6 +214,7 @@ bool Segment_pt::SplitSegment(Segment_pt** Update,skiplist* list){
             for(int i = newSeg->level;i>list->skip_level;i--){
                 Update[i] = list->header;
             }
+            list->skip_level = newSeg->level;
         }
         if(newSeg->level > this->level){
             for(int i = newSeg->level;i>this->level;i--){

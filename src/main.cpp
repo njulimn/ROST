@@ -4,7 +4,7 @@
 #include <algorithm>
 #include <time.h>
 
-#define NUMBERDATA 50000
+#define NUMBERDATA 2000000
 #define MaxL 9//(int)(log(NUMBERDATA)/log(2))
 #define Gma 128
 #define Verify 0
@@ -103,10 +103,12 @@ void ExpInsert(skiplist* list){
     for(int i = 0;i<NUMBERDATA;i++){
         if(!dataq0[i]) continue;
         list->Insert(dataq0[i],i);
+#if DEBUG
         std::pair<int,Segment_pt::Item*> res = list->Search(dataq0[i]);
         if(!res.first || (res.second)->comp.data.value != i){
             cerr<<"not find"<<endl;
         }
+#endif
     }
     end = clock();
     sumTime =(double(end-start)/CLOCKS_PER_SEC);
@@ -118,8 +120,7 @@ void ExpInsert(skiplist* list){
 int main(){
     // MaxLevel = readFromCSV(dataInput);
     GetData();
-    length = dataInput.size();
-    cerr<<"length:"<<length<<endl;
+    cerr<<"total count:"<<NUMBERDATA<<endl;
     // cerr<<"Max Level:"<<MaxLevel<<endl;
     skiplist* list = new skiplist(MaxL,Gma);
 
