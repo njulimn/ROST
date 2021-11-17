@@ -289,7 +289,6 @@ class Segment_pt{
 			Item* items = nullptr;
 			bitmap_t* none_bitmap = nullptr; // 1 means None, 0 means Data or Child
 			bitmap_t* child_bitmap = nullptr; // 1 means Child. will always be 0 when none_bitmap is 1
-			const double BUILD_LR_REMAIN = 0;
 		};
 
 		typedef struct {

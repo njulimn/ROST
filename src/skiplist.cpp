@@ -537,9 +537,6 @@ Segment_pt::subtree* Segment_pt::rebuild_tree(unsigned int *_keys,int*  _values,
 #else
             RT_ASSERT(n->slope >= 0);
 #endif
-            const int lr_remains = static_cast<int>(size * n->BUILD_LR_REMAIN);
-            n->intercept += lr_remains;
-            n->num_items += lr_remains * 2;
             //fix size?
             if (size > 2e4) {
                 n->fixed = 1;
