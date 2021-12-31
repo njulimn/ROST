@@ -14,8 +14,12 @@
 #include <cstring>
 #include <time.h>
 #include <queue>
-// #include "./fileOperation.hpp"
+#include <mutex>
+#include <atomic>
+#include <assert.h>
+#include <random>
 
+#define PREFETCH(addr, rw, locality) __builtin_prefetch
 typedef uint8_t bitmap_t;
 
 #define BITMAP_WIDTH (sizeof(bitmap_t) * 8)
@@ -28,10 +32,10 @@ typedef uint8_t bitmap_t;
 #define p 0.5
 #define UNINT_MAX 0xffffffff
 #define Epslion 1e-8
-#define LINAERITY 0.98
+#define LINAERITY 1.0//0.98
 #define USEPLR 1
 #define USEGREEDYPCCS 0
-#define DEBUG 0
+#define DEBUG 1
 #define SHOWLINEAR 0
 #define Gm 128
 #define MAX_DEPTH 6
@@ -48,13 +52,14 @@ typedef uint8_t bitmap_t;
 
 using namespace std;
 
-int collsion = 0;
+int collision = 0;
 int rebuild_cnt = 0;
 int split_cnt = 0;
 int file_num = 0;
 long long jmp_seg = 0;
 long long jmp_subtree = 0;
 long long scan_ = 0;
+std::mt19937 rd(time(0));
 
 bool check_file_test(char const *fileName)
 {
@@ -250,9 +255,9 @@ public:
 			// delete this->s0;
 			k->y = 0;
             k->x = 0;
-			this->s0 = nullptr;
+			// this->s0 = nullptr;
 			this->s0 = k;
-			this->s_last = nullptr;
+			// this->s_last = nullptr;
 			this->s_last = k;
 			this->state = GreedyState::Need1;
 
@@ -262,13 +267,13 @@ public:
 		Point* s_l = k->lower_bound(this->gamma);
 		if (this->rho_upper->BeblowAssert(s_u)) {
 			delete this->rho_upper;
-			this->rho_upper = nullptr;
+			// this->rho_upper = nullptr;
 			this->rho_upper = new Line(this->sint, s_u);
 		}
 
 		if (this->rho_lower->AboveAssert(s_l)) {
 			delete this->rho_lower;
-			this->rho_lower = nullptr;
+			// this->rho_lower = nullptr;
 			this->rho_lower = new Line(this->sint, s_l);
 		}
 		return nullptr;
@@ -280,7 +285,7 @@ public:
 		Segment* res = nullptr;
 		Point* newp = new Point(x, y);
 		// cerr<<"in process:old state "<<this->state<<endl;
-		GreedyState newState = this->state;
+		// GreedyState newState = this->state;
 		
 		// cerr<<"new state(old)："<<newState;
 		// cerr<<"GreedyState::Need2"<<GreedyState::Need2<<endl;
@@ -290,7 +295,7 @@ public:
 			newp->y = 0;
 			this->s_last = newp;
 			this->s0 = newp;
-			newState = GreedyState::Need1;
+			// newState = GreedyState::Need1;
 			this->state = GreedyState::Need1;
 		}
 		else if (this->state == GreedyState::Need1) {
@@ -300,17 +305,17 @@ public:
 			this->s_last = newp;
 			this->s1 = newp;
 			this->setup(this->s0, this->s1);
-			newState = GreedyState::Ready;
+			// newState = GreedyState::Ready;
 			this->state = GreedyState::Ready;
 		}
 		else if (this->state == GreedyState::Ready) {
 			res = this->Process_pt(newp);
 			if (res != nullptr) {
-				newState = GreedyState::Need1;
+				// newState = GreedyState::Need1;
 				this->state = GreedyState::Need1;
 			}
 			else {
-				newState = GreedyState::Ready;
+				// newState = GreedyState::Ready;
 				this->state = GreedyState::Ready;
 			}
 		}
@@ -341,184 +346,275 @@ typedef struct node{
     int value;
 }node;
 
-typedef struct snode{
-	unsigned int key;
-	unsigned int level;
-}snode;
-
-class skiplist;
-
-class Segment_pt{
+class skiplist {
     public:
-		struct subtree;
-		struct Item{
-				union {
-					node data;
-					subtree* child;
-				}comp;
-		};
-		struct subtree
-		{
-			int is_two = 0; // is special node for only two keys
-			int build_size = 0; // tree size (include sub nodes) when node created
-			int size = 0; // current tree size (include sub nodes)
-			int fixed = 0; // fixed node will not trigger rebuild
-			int num_inserts = 0, num_insert_to_data = 0;
-			// int child_ptr = 0;
-			int num_items = 0; // size of items
-			double slope = 0,intercept = 0;
-			unsigned int start = UNINT_MAX,stop=UNINT_MAX;
-			Item* items = nullptr;
-			bitmap_t* none_bitmap = nullptr; // 1 means None, 0 means Data or Child
-			bitmap_t* child_bitmap = nullptr; // 1 means Child. will always be 0 when none_bitmap is 1
-		};
+        std::atomic<int> max_height_; 
+        int MaxLevel;
+		int gamma;
+        struct subtree;
+        struct Item{
+            union {
+                node data;
+                subtree* child;
+            }comp;
+        };
+        struct subtree{
+            int is_two = 0; // is special node for only two keys
+            int build_size = 0; // tree size (include sub nodes) when node created
+            int size = 0; // current tree size (include sub nodes)
+            int fixed = 0; // fixed node will not trigger rebuild
+            int num_inserts = 0, num_insert_to_data = 0;
+            // int child_ptr = 0;
+            int num_items = 0; // size of items
+            double slope = 0,intercept = 0;
+            unsigned int start = UNINT_MAX,stop=UNINT_MAX;
+            Item* items = nullptr;
+            bitmap_t* none_bitmap = nullptr; // 1 means None, 0 means Data or Child
+            bitmap_t* child_bitmap = nullptr; // 1 means Child. will always be 0 when none_bitmap is 1
+            
+            inline int predict(unsigned int key){
+                double v = this->slope * (static_cast<long double>(key)-static_cast<long double>(this->start)) + this->intercept;
+                // if (std::isnan(v)){
+                // 	return this->num_items - 1;
+                // }
+                if(v > std::numeric_limits<int>::max() / 2) {
+                    return this->num_items - 1;
+                }
+                if(v < 0 || static_cast<int>(v)<0){
+                    return 0;
+                }
+                return std::min(this->num_items - 1, static_cast<int>(v));
+            }
 
-		typedef struct {
+        };
+        struct Segment_pt{
+            int level;
+            unsigned int anchor;//left guard
+            unsigned int bound;//right guard
+            subtree* DataArray;
+            // bool rebuild;
+            // bool split;
+            bool marked;
+            std::atomic<bool> lock;//false means segment is locked
+            std::atomic<bool> build;//true means 
+            std::atomic<Segment_pt*> *next_;
+            // std::atomic<Segment_pt*> next_[1];
+
+            inline void InitLock(){
+                lock.store(true, std::memory_order_release);
+            }
+
+            inline void InitBuildM(){
+                build.store(false, std::memory_order_release);
+            }
+
+            inline bool ReadLock(){
+                return lock.load(std::memory_order_acquire);
+            }
+
+            inline bool ReadBuildM(){
+                return build.load(std::memory_order_acquire);
+            }
+
+            inline bool CASLock(bool free = true,bool block=false){
+                return lock.compare_exchange_strong(free, block);
+            }
+
+            inline bool CASBuild(bool free = false,bool block=true){
+                return build.compare_exchange_strong(free, block);
+            }
+
+            inline void RealseLock(){
+                lock.store(true, std::memory_order_release);
+            }
+
+            inline void RealseBuild(){
+                build.store(false, std::memory_order_release);
+            }
+
+            Segment_pt* Next(int n) {
+                assert(n >= 0);
+                // Use an 'acquire load' so that we observe a fully initialized
+                // version of the returned Node.
+                return (next_[n].load(std::memory_order_acquire));
+            }
+
+            void SetNext(int n, Segment_pt* x) {
+                assert(n >= 0);
+                next_[n].store(x, std::memory_order_release);
+            }
+
+            bool CASNext(int n, Segment_pt* expected, Segment_pt* x) {
+                assert(n >= 0);
+                return next_[n].compare_exchange_strong(expected, x);
+            }
+
+            // No-barrier variants that can be safely used in a few locations.
+            Segment_pt* NoBarrier_Next(int n) {
+                assert(n >= 0);
+                return next_[n].load(std::memory_order_relaxed);
+            }
+            
+            void NoBarrier_SetNext(int n, Segment_pt* x) {
+                assert(n >= 0);
+                next_[n].store(x, std::memory_order_relaxed);
+            }
+
+            long long Computespace(){
+                long long space = 0;
+                space+=sizeof(std::atomic<Segment_pt*>) * (level)+sizeof(Segment_pt);
+                std::queue<subtree*> s;
+                s.push(DataArray);
+                while(!s.empty()){
+                    subtree* n = s.front();
+                    s.pop();
+                    
+                    space+=sizeof(subtree);
+                    
+                    if(n->size == 1){
+                        space+=(sizeof(Item));
+                        space+=(sizeof(bitmap_t) * 2);
+                    }
+                    else{
+                        const int bitmap_size = BITMAP_SIZE(n->num_items);
+                        //items
+                        space+=(n->num_items * sizeof(Item));
+                        //bitmap
+                        space+=( bitmap_size * sizeof(bitmap_t) *2);
+                        for(int i = 0;i<n->num_items;i++){
+                            if(BITMAP_GET(n->child_bitmap,i)){
+                                s.push(n->items[i].comp.child);
+                            }
+                        }
+                    }
+                }
+                // space-=(DataArray->size*8);
+                return space;
+                
+            }
+
+        };
+
+        struct State{
+            unsigned int key;
+            int value;
+            Segment_pt** ppreds;
+            Segment_pt** preds;
+            Segment_pt** currs;
+            Segment_pt** succs;
+
+        };
+        
+        typedef struct {
             int begin;
             int end;
             int lvl; // top lvl = 1
             subtree* n;
-		} Seg;
-
-        vector<Segment_pt*> forward;//Segment_pt** forward;
-        int level;
-        subtree* DataArray;
-		static std::stack<subtree*> pending_two;
-
-        Segment_pt();
-		Segment_pt(int level,subtree* n){
-            this->level = level;
-            vector<Segment_pt*> new_seg(level+1);//this->forward = (Segment_pt**)malloc(sizeof(Segment_pt*)*(level+1));
-			this->forward = new_seg;
-            for(int i=1;i<=level;i++){
-                this->forward[i] = this;
+        } Seg;
+        
+        typedef struct Splice{
+            int height_ = 0;
+            Segment_pt** prev_;
+            Segment_pt** next_;
+        }Splice;
+        
+        std::allocator<subtree> subtree_allocator;
+        subtree* new_subtree(int n){
+            subtree* x = subtree_allocator.allocate(n);
+            if(x!=nullptr){
+                return x;
             }
-			std::vector<subtree*> trees;
-
-			DataArray = n;
+            cerr<<"allocate failed"<<endl;
+            return nullptr;
         }
-		Segment_pt(int level,bool mempool = false){
-            this->level = level;
-            vector<Segment_pt*> new_seg(level+1);//this->forward = (Segment_pt**)malloc(sizeof(Segment_pt*)*(level+1));
-			this->forward = new_seg;
-            for(int i=1;i<=level;i++){
-                this->forward[i] = this;
-            }
-			if(mempool){
-				std::vector<subtree*> nodes;
-				for (int _ = 0; _ < 1e5; _ ++) {
-					subtree* node = build_tree_two(0,0,1,1);
-					nodes.push_back(node);
-				}
-				for (auto node : nodes) {
-					destroy_subtree(node);
-				}
-			}
-			DataArray = build_tree_none();
+        void delete_subtree(subtree* x,int n){
+            subtree_allocator.deallocate(x,n);
         }
-		~Segment_pt(){
-			destroy_subtree(DataArray);
-			DataArray = NULL;
-			destory_pending();
-		}
 
-		std::allocator<subtree> subtree_allocator;
-		subtree* new_subtree(int n){
-			subtree* x = subtree_allocator.allocate(n);
-			if(x!=nullptr){
-				return x;
-			}
-			cerr<<"allocate failed"<<endl;
-			return nullptr;
-		}
-		void delete_subtree(subtree* x,int n){
-			subtree_allocator.deallocate(x,n);
-		}
-
-		void destroy_subtree(subtree* root){
-			std::stack<subtree*> s;
-			s.push(root);
-			while (!s.empty()) {
-				subtree* n = s.top(); s.pop();
-				for (int i = 0; i < n->num_items; i ++) {
-					if (BITMAP_GET(n->child_bitmap, i) == 1) {
-						s.push(n->items[i].comp.child);
-					}
-				}
-
-				if (n->is_two) {
-					RT_ASSERT(n->build_size == 2);
-					RT_ASSERT(n->num_items == 32);
-					n->size = 2;
-					n->num_inserts = n->num_insert_to_data = 0;
-                    // n->num_items = 8;
-                    // n->none_bitmap[0] = 0xff;
-                    // n->child_bitmap[0] = 0;
-                    for(int _=0;_<4;_++){
-                        n->none_bitmap[_] = 0xff;
-                        n->child_bitmap[_] = 0;
+        void destroy_subtree(subtree* root){
+            std::stack<subtree*> s;
+            s.push(root);
+            while (!s.empty()) {
+                subtree* n = s.top(); s.pop();
+                for (int i = 0; i < n->num_items; i ++) {
+                    if (BITMAP_GET(n->child_bitmap, i) == 1) {
+                        s.push(n->items[i].comp.child);
                     }
-					pending_two.push(n);
-				} else {
-					delete_items(n->items, n->num_items);
-					const int bitmap_size = BITMAP_SIZE(n->num_items);
-					delete_bitmap(n->none_bitmap, bitmap_size);
-					delete_bitmap(n->child_bitmap, bitmap_size);
-					delete_subtree(n, 1);
-				}
-			}
-		}
+                }
 
-		void destory_pending()
-		{
-			while (!pending_two.empty()) {
-				subtree* n = pending_two.top(); pending_two.pop();
+                // if (n->is_two) {
+                // 	RT_ASSERT(n->build_size == 2);
+                // 	RT_ASSERT(n->num_items == 32);
+                // 	n->size = 2;
+                // 	n->num_inserts = n->num_insert_to_data = 0;
+                //     // n->num_items = 8;
+                //     // n->none_bitmap[0] = 0xff;
+                //     // n->child_bitmap[0] = 0;
+                //     for(int _=0;_<4;_++){
+                //         n->none_bitmap[_] = 0xff;
+                //         n->child_bitmap[_] = 0;
+                //     }
+                // 	pending_two.push(n);
+                // } else {
+                    delete_items(n->items, n->num_items);
+                    const int bitmap_size = BITMAP_SIZE(n->num_items);
+                    delete_bitmap(n->none_bitmap, bitmap_size);
+                    delete_bitmap(n->child_bitmap, bitmap_size);
+                    delete_subtree(n, 1);
+                // }
+            }
+        }
 
-				delete_items(n->items, n->num_items);
-				const int bitmap_size = BITMAP_SIZE(n->num_items);
-				delete_bitmap(n->none_bitmap, bitmap_size);
-				delete_bitmap(n->child_bitmap, bitmap_size);
-				delete_subtree(n, 1);
-			}
-		}
+        // void destory_pending()
+        // {
+        // 	while (!pending_two.empty()) {
+        // 		subtree* n = pending_two.top(); pending_two.pop();
+        //
+        // 		delete_items(n->items, n->num_items);
+        // 		const int bitmap_size = BITMAP_SIZE(n->num_items);
+        // 		delete_bitmap(n->none_bitmap, bitmap_size);
+        // 		delete_bitmap(n->child_bitmap, bitmap_size);
+        // 		delete_subtree(n, 1);
+        // 	}
+        // }
 
-		std::allocator<Item> item_allocator;
-		Item* new_items(int n)
-		{
-			Item* x = item_allocator.allocate(n);
-			// RT_ASSERT(p != NULL && p != (Item*)(-1));
-			return x;
-		}
-		void delete_items(Item* x, int n)
-		{
-			item_allocator.deallocate(x, n);
-		}
+        std::allocator<Item> item_allocator;
+        Item* new_items(int n)
+        {
+            Item* x = item_allocator.allocate(n);
+            // RT_ASSERT(p != NULL && p != (Item*)(-1));
+            return x;
+        }
+        void delete_items(Item* x, int n)
+        {
+            item_allocator.deallocate(x, n);
+        }
 
-		std::allocator<bitmap_t> bitmap_allocator;
-		bitmap_t* new_bitmap(int n)
-		{
-			bitmap_t* x = bitmap_allocator.allocate(n);
-			// RT_ASSERT(x != NULL && x != (bitmap_t*)(-1));
-			return x;
-		}
-		void delete_bitmap(bitmap_t* x, int n)
-		{
-			bitmap_allocator.deallocate(x, n);
-		}
-		
-		bool checkTree(subtree* n){
-			int shouldbe = n->size;
+        std::allocator<bitmap_t> bitmap_allocator;
+        bitmap_t* new_bitmap(int n)
+        {
+            bitmap_t* x = bitmap_allocator.allocate(n);
+            // RT_ASSERT(x != NULL && x != (bitmap_t*)(-1));
+            return x;
+        }
+        void delete_bitmap(bitmap_t* x, int n)
+        {
+            bitmap_allocator.deallocate(x, n);
+        }
+        
+        bool checkTree(subtree* n){
+            int shouldbe = n->size;
             int real = 0;
-			int prt = 0;
+            int prt = 0;
             for(int j = 0;j<n->num_items;j++){
                 if(!BITMAP_GET(n->none_bitmap,j)){
                     if(BITMAP_GET(n->child_bitmap,j)){
-						if(checkTree(n->items[j].comp.child)){
-                        	real+=(n->items[j].comp.child->size);
-							prt++;
-						}
-						else
-							return false;
+                        if(checkTree(n->items[j].comp.child)){
+                            real+=(n->items[j].comp.child->size);
+                            prt++;
+                        }
+                        else
+                            return false;
                     }
                     else{
                         real++;
@@ -527,134 +623,289 @@ class Segment_pt{
             }
             if(shouldbe!=real){
                 cerr<<"rebuild "<<n<<"error"<<endl;
-				return false;
+                return false;
             }
-			return true;
-		}
-
-		void insert_subtree(unsigned int key,int value,Segment_pt** Update,skiplist* list);
-		
-		std::pair<int,node*> find_subtree(unsigned int key);
-
-		std::pair<unsigned int,unsigned int> computeRange(int pos,subtree* x){
-			unsigned int start = 0,stop = 0;
-			start = (pos - x->intercept)/(x->slope * 1000.0)*1000.0;
-			stop = (pos+1 - x->intercept)/(x->slope * 1000.0)*1000.0;
-			return {start+x->start,stop+x->start};
-		}
-
-		inline int compute_gap_count(int size) {
-			if (size >= 1000000) return 1;
-			if (size >= 100000) return 2;
-			return 5;
-		}
-
-		inline int predict(subtree*root,unsigned int key){
-			// cerr<<root->slope<<","<<root->intercept<<endl;
-			double v = root->slope * (static_cast<long double>(key)-static_cast<long double>(root->start)) + root->intercept;
-			// if (std::isnan(v)){
-			// 	return root->num_items - 1;
-			// }
-			if(v > std::numeric_limits<int>::max() / 2) {
-            	return root->num_items - 1;
-			}
-			if(v < 0 || static_cast<int>(v)<0){
-				// cerr<<"prd:"<<v<<endl;
-				return 0;
-			}
-			return std::min(root->num_items - 1, static_cast<int>(v));
-		}
-
-		void SplitSegment(Segment_pt** Update,skiplist* list,unsigned int *_keys,int*  _values,int _size,long double pccs,int middle,unsigned int _start,unsigned int _stop);
-
-		/// build an empty tree
-		subtree* build_tree_none();
-
-		subtree* build_tree_two(unsigned int key1, int value1, unsigned int key2, int value2,unsigned int start=0,unsigned int stop=0,subtree* x = nullptr);
-
-		subtree* rebuild_tree(unsigned int *_keys,int* _values,int _size,unsigned int start,unsigned int stop,bool plr = false,double top_slope = 0,double top_intercept = 0);
-
-		std::pair<long double,int> scan_and_destroy_subtree(subtree* root,unsigned int*keys,int* values, bool destory = true);
-
-		long long Computespace();
-
-		// void show(int w);
-
-};
-
-class skiplist {
-    public:
-        int skip_level;
-        int segCnt;
-        Segment_pt *header;
-        int MaxLevel;
-		int gamma;
-
-        skiplist();
-        skiplist(int MaxLevel,int gamma){
-            Segment_pt *header = new Segment_pt(MaxLevel,true);//(snode *)malloc(sizeof(struct snode));
-            this->header = header;
-            this->skip_level = 1;
-            this->segCnt = 0;
-            this->MaxLevel = MaxLevel;
-			this->gamma = gamma;
-			// Segment_pt* newSeg = new Segment_pt(this->RandLevel(),0,0,0,0);
-			// for(int i = newSeg->level;i>=1;i--){
-			// 	this->header->forward[i] = newSeg;
-			// 	newSeg->forward[i] = this->header;
-			// }
+            return true;
         }
 
-		void setup(vector<snode> input);
+        inline int compare_(unsigned int k1,unsigned int  k2){
+            if(k1<k2){
+                return -1;
+            }
+            else if(k1 == k2){
+                return 0;
+            }else{
+                return 1;
+            }
+        }
 
-		node* binarySearch(Segment_pt* x,unsigned int key);
-		std::pair<int,node*> Search(unsigned int key);
+        void insert_subtree(Segment_pt* root,unsigned int key,int value,subtree* path[],int &path_size);
+        
+        std::pair<int,node*> find_subtree(subtree* n,unsigned int key){
+            // subtree* n = this->DataArray;
+            while(1){
+                int pos = n->predict(key);
+                if (BITMAP_GET(n->none_bitmap, pos) == 1) {
+                    //checkTypeEqualNull
+                    break;
+                    // return {false,0};
+                }
+                else if(BITMAP_GET(n->child_bitmap, pos) == 0){
+                    //checkTypeEqualData
+                    return {n->items[pos].comp.data.key == key,&(n->items[pos].comp.data)};
+                }
+                else{
+                    jmp_subtree++;
+                    n = n->items[pos].comp.child;
+                }
+            }
+            return {false,0};
+        }
 
-		void Insert(unsigned int key,int value);
+        std::pair<unsigned int,unsigned int> computeRange(int pos,subtree* x){
+            unsigned int start = 0,stop = 0;
+            start = (pos - x->intercept)/(x->slope * 1000.0)*1000.0;
+            stop = (pos+1 - x->intercept)/(x->slope * 1000.0)*1000.0;
+            return {start+x->start,stop+x->start};
+        }
+
+        inline int compute_gap_count(int size) {
+            if (size >= 1000000) return 1;
+            if (size >= 100000) return 2;
+            return 5;
+        }
+
+        bool SplitSegment(Segment_pt *root,State* proc_state,skiplist* list,unsigned int *_keys,int*  _values,int _size,long double pccs,int middle,unsigned int _start,unsigned int _stop);
+
+        subtree* build_tree_none();
+
+        subtree* build_tree_two(unsigned int key1, int value1, unsigned int key2, int value2,unsigned int start=0,unsigned int stop=0,subtree* x = nullptr);
+
+        subtree* rebuild_tree(unsigned int *_keys,int* _values,int _size,unsigned int start,unsigned int stop,bool plr = false,double top_slope = 0,double top_intercept = 0);
+
+        std::pair<long double,int> scan_and_destroy_subtree(subtree* root,unsigned int*keys,int* values, bool destory = true);
+
+        // long long Computespace();
+
+        // void show(){
+        //     cerr<<this<<"\tstart:"<<this->DataArray->start<<"\tstop:"<<this->DataArray->stop<<endl;
+        // }
+
+        Segment_pt* NewSegment_pt(int level,unsigned int base,unsigned int bound,subtree* n){
+            Segment_pt *newseg = new Segment_pt;
+            newseg->level = level;
+            newseg->anchor = base;
+            newseg->bound = bound;
+            newseg->DataArray = n;
+            newseg->marked = 0;
+            // newseg->rebuild = 0;
+            // newseg->split = 0;
+            newseg->InitLock();
+            newseg->InitBuildM();
+            newseg->next_ = new std::atomic<Segment_pt*>[level];
+            return newseg;
+        }
+
+        Segment_pt* NewSegment_pt_nodata(int level,unsigned int base,unsigned int bound){
+            Segment_pt *newseg = new Segment_pt;
+            newseg->level = level;
+            newseg->anchor = base;
+            newseg->bound = bound;
+            newseg->DataArray = nullptr;
+            newseg->marked = 0;
+            // newseg->rebuild = 0;
+            // newseg->split = 0;
+            newseg->InitLock();
+            newseg->InitBuildM();
+            newseg->next_ = new std::atomic<Segment_pt*>[level];
+            return newseg;
+        }
+        
+        Segment_pt* NewSegment_pt(int level,unsigned int base,unsigned int bound){
+            Segment_pt *newseg = new Segment_pt;
+            newseg->level = level;
+            newseg->anchor = base;
+            newseg->bound = bound;
+            newseg->DataArray =  build_tree_none();
+            newseg->marked = 0;
+            // newseg->rebuild = 0;
+            // newseg->split = 0;
+            newseg->InitLock();
+            newseg->InitBuildM();
+            newseg->next_ = new std::atomic<Segment_pt*>[level];
+            return newseg;
+        }
+        
+        // void deleteSegment_pt(){
+        //     destroy_subtree(DataArray);
+        //     DataArray = NULL;
+        //     // destory_pending();
+        // }
+
+        /////////////////////////////////
+        
+        // int segCnt;
+        Segment_pt *head_;
+        Segment_pt *tail_;
+        skiplist();
+        skiplist(int MaxLevel,int gamma):max_height_(1),MaxLevel(MaxLevel),gamma(gamma){
+            head_ = NewSegment_pt(MaxLevel,0,0);
+            head_->DataArray->start = 0;
+            head_->DataArray->stop = 0;
+            tail_ = NewSegment_pt(MaxLevel,UNINT_MAX,UNINT_MAX);
+            tail_->DataArray->start = UNINT_MAX;
+            tail_->DataArray->stop = UNINT_MAX;
+            Segment_pt* newSeg = NewSegment_pt(this->RandLevel(),1,UNINT_MAX);//new Segment_pt(this->RandLevel());
+            int max_height = 1;
+            while (newSeg->level > max_height) {
+                if (max_height_.compare_exchange_weak(max_height, newSeg->level)) {
+                // successfully updated it
+                max_height = newSeg->level;
+                break;
+                }
+            }
+            newSeg->DataArray->start = 1;
+            newSeg->DataArray->stop = UNINT_MAX;
+            for(int i = 0;i<newSeg->level;i++){
+                head_->SetNext(i,newSeg);
+                newSeg->SetNext(i,tail_);
+                tail_->SetNext(i,nullptr);
+            }  
+            for(int i = newSeg->level;i<=MaxLevel;i++){
+                head_->SetNext(i, tail_);
+                tail_->SetNext(i,nullptr);
+            }
+            
+        }
+
+        inline bool KeyIsAfterNodeStart(unsigned int key, Segment_pt* n) const {
+            // nullptr n is considered infinite
+            assert(n != head_);
+            return (n != nullptr) && (n->DataArray->start <= key);
+        }
+
+        inline bool KeyIsntAfterNode(unsigned int key, Segment_pt* n) const {
+            // nullptr n is considered infinite
+            assert(n != head_);
+            return (n != nullptr) && (n->DataArray->stop > key);
+        }
+
+        inline bool KeyIsAfterNode(unsigned int key, Segment_pt* n) const {
+            // nullptr n is considered infinite
+            assert(n != head_);
+            return (n != nullptr) && (n->DataArray->stop < key);
+        }
+
+        inline int GetMaxHeight() const {
+            return max_height_.load(std::memory_order_relaxed);
+        }
+
+        Segment_pt* Scan(State* proc_state);
+
+        std::pair<int,int> Seek(State* proc_state);
+
+        std::pair<int,int> Lookup(State* proc_state);
+
+		// std::pair<int,node*> Search(unsigned int key);
+
+        int Add(State* proc_state,Segment_pt* locate);
+
+		// bool Insert(unsigned int key,int value);
+
+        bool Insert(State* proc_state);
 
 		void insert_static(vector<Segment_pt*> &Update,Segment* seg,unsigned int st,unsigned int ed,node* input,int size,int level);
 
+        bool LockAndValidateUntil(Segment_pt* from[],Segment_pt* to[],int level);
+
+        bool LockAndValidateUntil(Segment_pt* from[],Segment_pt* to[],int from_level,int to_level);
+
+        void UnlockUntil(Segment_pt* from[],int level);
+
+        void UnlockUntil(Segment_pt* from[],int from_level,int to_level);
+
 		void show();
 
-        void ShowNodeDis();
-        void Dump();
+        // void ShowNodeDis();
+        // void Dump();
 
-		void ComputeSpace();
+		// void ComputeSpace();
 		        
         int RandLevel(){
-            int NewLevel = 1;
-            int P = p*100;
-            while(1){
-                int t = rand() % 101;
-                if(t<P)
-                    NewLevel++;
-                else
+            int lvl = 1;
+            default_random_engine e(rd());
+            uniform_int_distribution<int>u(0,9);
+            for(int i = 0;i<MaxLevel-1;i++){
+                if(u(e) > 4){
                     break;
+                }
+                lvl++;
             }
-            return min(NewLevel,this->MaxLevel);
+            return lvl;
         }
         // int Delete(skiplist *list,int k);
         // int Insert(skiplist *list,int k,int v);
+
+        void FindSpliceForLevel(unsigned int key,Segment_pt* before, Segment_pt* after,int level, Segment_pt** out_prev,Segment_pt** out_next,Segment_pt **locate) {
+            while (true) {
+                Segment_pt* next = before->Next(level);
+                if (next != nullptr) {
+                    PREFETCH(next->Next(level), 0, 1);
+                }
+                if (next != nullptr && level>0) {
+                    PREFETCH(next->Next(level-1), 0, 1);
+                }
+                
+                assert(before == head_ || next == nullptr ||KeyIsAfterNode(next->DataArray->stop, before));
+                assert(before == head_ || KeyIsAfterNode(key, before));
+                //key < next
+                if (next == after || KeyIsntAfterNode(key, next)) {
+                    // found it
+                    *out_prev = before;
+                    if(next != after && KeyIsAfterNodeStart(key,next)){
+                        if(!(*locate))
+                        (*locate) = next;
+                        *out_next = next->Next(level);
+                    }else{
+                        *out_next = next;
+                    }
+                    return;
+                }
+                before = next;
+            }
+        }
+
+        void RecomputeSpliceLevels(unsigned int key,Splice* splice,int recompute_level,Segment_pt **locate) {
+            assert(recompute_level > 0);
+            assert(recompute_level <= splice->height_);
+            for (int i = recompute_level - 1; i >= 0; --i) {
+                FindSpliceForLevel(key, splice->prev_[i + 1], splice->next_[i + 1], i,
+                                &splice->prev_[i], &splice->next_[i],locate);
+            }
+        }
 };
 
 
-std::stack<Segment_pt::subtree*> s;
-std::stack<Segment_pt::subtree*> Segment_pt::pending_two = s;
-
-
-void Segment_pt::SplitSegment(Segment_pt** Update,skiplist* list,unsigned int *_keys,int*  _values,int _size,long double pccs,int middle,unsigned int _start,unsigned int _stop){
-    cerr<<"split"<<endl;
+bool skiplist::SplitSegment(Segment_pt *root,State* proc_state,skiplist* list,unsigned int *_keys,int*  _values,int _size,long double pccs,int middle,unsigned int _start,unsigned int _stop){
+    // cerr<<"split"<<endl;
 #if USEPLR
-    int st = 0,ed =0;
+    int st = 0,ed =0;//the rank of the first/last+1 ele of one segment
     GreedyPLR* plr = new GreedyPLR(Gm);
     vector<Segment*> seg;
     vector<int> segment_stIndex;
+    vector<int> height_seq;
+    int max_height_cur = list->GetMaxHeight();
     for (int i = 0; i < _size; i++) {
 		Segment* seg_res = nullptr;
 		seg_res = plr->Process(static_cast<double>(_keys[i])-static_cast<double>(_keys[st]), static_cast<double>(i-st));
 		if(seg_res) {
             segment_stIndex.push_back(st);
             seg.push_back(seg_res);
+            if(st != 0){
+                int h = RandLevel();
+                max_height_cur = max(max_height_cur,h);
+                height_seq.push_back(h);
+            }
             st = ed = i;
 		}
         else{
@@ -666,30 +917,107 @@ void Segment_pt::SplitSegment(Segment_pt** Update,skiplist* list,unsigned int *_
 	if (seg_res) {
         segment_stIndex.push_back(st);
         seg.push_back(seg_res);
-
+        if(st != 0){
+            int h = RandLevel();
+            height_seq.push_back(h);
+            max_height_cur = max(max_height_cur,h);
+        }
+        
 	}
+    int seg_size = static_cast<int>(seg.size());
+    cerr<<"split seg size:"<<seg_size<<endl;
+    if(seg_size > 1){
+        bool result = LockAndValidateUntil(proc_state->preds,proc_state->succs,root->level,max_height_cur);//root->level-1,
+        if(!result){
+            //memory release
+            return false;
+        }
+    }
+    //如果需要split，但是acquire失败，则进行rebuild
     // cerr<<"seg size:"<<seg.size()<<endl;
 #if WRITESEG
     string kk = "\nseg size "+to_string(seg.size())+":\n";
     write_into_file("./split.txt",kk.c_str());
 #endif
-    for(int i=0;i<static_cast<int>(seg.size());i++){
+    vector<Segment_pt*> split_segments(seg_size);
+    split_segments[0] = root;
+    int max_seg_height = root->level;
+    Segment_pt** preds = (Segment_pt**)(malloc(sizeof(Segment_pt*)*MaxLevel));
+    memcpy(preds,proc_state->preds,sizeof(Segment_pt*)*MaxLevel);
+    for(int i = 1;i<seg_size;i++){
+       
+        int height_tmp = height_seq[i-1];//RandLevel();
+        unsigned int base = _keys[segment_stIndex[i]];
+        unsigned int bound;
+         if(i==1){
+            root->bound = base;
+        }
+        if(i != seg_size){
+            bound = _stop;
+        }else{
+            bound = _keys[segment_stIndex[i+1]];
+        }
+        Segment_pt* next_seg = NewSegment_pt_nodata(height_tmp,base,bound);
+        split_segments[i] = next_seg;
+        next_seg->CASBuild();
+        // Acquire(next_seg);
+        assert(next_seg->CASLock());
+        max_seg_height = max(max_seg_height,height_tmp);
+        for(int l = height_tmp-1;l>=0;l--){
+            next_seg->NoBarrier_SetNext(l,preds[l]->NoBarrier_Next(l));
+            preds[l]->NoBarrier_SetNext(l,next_seg);
+            preds[l] = next_seg;
+            /*
+            if (proc_state->preds[l]->CASNext(l, proc_state->succs[l], next_seg)) {
+                cerr<<" pre:"<<proc_state->preds[l]<<endl;
+                proc_state->preds[l] = next_seg;
+            }else{
+                cerr<<"failed"<<endl;
+                //delete next seg
+                for(int j = i;j>=1;j--){
+                    split_segments[j]->RealseLock();
+                }
+                return false;
+            }
+            */
+        }
+
+    }
+    
+    for(int i = 0;i<seg_size;i++){
+        cerr<<split_segments[i]<<endl;
+        for(int j = 0;j<split_segments[i]->level;j++){
+            cerr<<"level "<<j<<"next:"<<split_segments[i]->NoBarrier_Next(j)<<endl;
+        }
+    }
+
+    int max_height = list->max_height_.load(std::memory_order_relaxed);
+    while (max_seg_height > max_height) {
+        if (list->max_height_.compare_exchange_weak(max_height, max_seg_height)) {
+            // successfully updated it
+            max_height = max_seg_height;
+            break;
+        }
+        // else retry, possibly exiting the loop because somebody else
+        // increased it
+    }
+
+    for(int i=0;i<seg_size;i++){
         st = segment_stIndex[i];
-        unsigned int stop = 0;
-        unsigned int start_local = 0;
+        unsigned int stop = 0;// interval left value of one segment
+        unsigned int start_local = 0;//interval right value of one segment
         if(st == 0){
-            start_local = _start;
+            start_local = _start;//the parent's interval left
         }else{
             start_local = _keys[st];
         }
-        if(i == static_cast<int>(seg.size())-1){
+        if(i == seg_size-1){
             ed = _size;
-            // stop = _keys[ed-1]+1;
-            stop = _stop;
+            stop = _stop;//the parent's interval right
         }
         else{
             ed = segment_stIndex[i+1];
-            stop = _keys[ed];
+            stop = _keys[ed];//the interval right value is the interval left value of the next segment
         }
 #if WRITESEG
         string kk = to_string(ed-st)+",";
@@ -713,29 +1041,17 @@ void Segment_pt::SplitSegment(Segment_pt** Update,skiplist* list,unsigned int *_
             else
                 new_subtree = rebuild_tree(_keys+st,_values+st,ed-st,start_local,stop);//,true,seg[i]->slope,seg[i]->intercept);
         }
-        if(i == 0){
-            this->DataArray = new_subtree;
-            for(int l = this->level;l>=1;l--){
-                Update[l] = this;
-            }
-        }
-        else{
-            //Update 应保存 每层都在newSeg左边的segment
-            Segment_pt* newSeg = new Segment_pt(list->RandLevel(),new_subtree);
-            if(newSeg->level > list->skip_level){
-                for(int l = newSeg->level;l>list->skip_level;l--){
-                    Update[l] = list->header;
-                }
-                list->skip_level = newSeg->level;
-            }
-            for(int l = newSeg->level;l>=1;l--){
-                newSeg->forward[l] = Update[l]->forward[l];
-                Update[l]->forward[l] = newSeg;
-                Update[l] = newSeg;
-            }
-            list->segCnt++;
-        }
+        split_segments[i]->anchor = start_local;
+        split_segments[i]->DataArray = new_subtree;
     }
+    for(int i = 1;i<seg_size;i++){
+        // Release(split_segments[i]);
+        split_segments[i]->RealseBuild();
+        split_segments[i]->RealseLock();
+    }
+    UnlockUntil(proc_state->preds,max_height_cur);
+    cerr<<"split end"<<endl;
+    return true;
 #elif USEGREEDYPCCS
     long double sum_of_key = 0;//sigma(x-x0)
     long double sum_of_y = 0;//(static_cast<long double>( _root->size)-1)* _root->size/2;//simga(y)
@@ -772,7 +1088,9 @@ void Segment_pt::SplitSegment(Segment_pt** Update,skiplist* list,unsigned int *_
 
             if(abs(PCCs) < LINAERITY || i >= _size-2 ){//|| ele_cnt>1e5
                 split_++;
-                // cerr<<"split pccs:"<<PCCs<<endl;
+                #if WRITESEG
+                cerr<<"split pccs:"<<PCCs<<endl;
+                #endif
                 subtree* new_subtree = nullptr;
                 if(st_idx == 0){
                     start_local = _start;
@@ -781,35 +1099,40 @@ void Segment_pt::SplitSegment(Segment_pt** Update,skiplist* list,unsigned int *_
                     RT_ASSERT(start_local == pre_stop);
                 }
                 if(i >= _size -2){
+                    #if WRITESEG
                     string kk = to_string(_size-st_idx)+",";
                     write_into_file("./split.txt",kk.c_str());
+                    #endif
                     new_subtree = rebuild_tree(_keys+st_idx,_values+st_idx,_size-st_idx,start_local,_stop);
                 }else{
+                    #if WRITESEG
                     string kk = to_string(i-st_idx)+",";
                     write_into_file("./split.txt",kk.c_str());
+                    #endif
                     new_subtree = rebuild_tree(_keys+st_idx,_values+st_idx,i-st_idx,start_local,_keys[i]);
                     pre_stop = _keys[i];
                 }
                 if(st_idx == 0){
-                    this->DataArray = new_subtree;
-                    for(int l = this->level;l>=1;l--){
-                        Update[l] = this;
-                    }
+                    root->DataArray = new_subtree;
+                    // for(int l = root->level;l>=1;l--){
+                    //     preds[l] = root;
+                    // }
                 }
                 else{
                     //Update 应保存 每层都在newSeg左边的segment
                     Segment_pt* newSeg = new Segment_pt(list->RandLevel(),new_subtree);
-                    if(newSeg->level > list->skip_level){
-                        for(int l = newSeg->level;l>list->skip_level;l--){
-                            Update[l] = list->header;
-                        }
-                        list->skip_level = newSeg->level;
+                    if(newSeg->level > list->max_height_){
+                        // for(int l = newSeg->level;l>list->max_height_;l--){
+                        //     Update[l] = list->head_;
+                        // }
+                        list->max_height_ = newSeg->level;
                     }
                     for(int l = newSeg->level;l>=1;l--){
-                        newSeg->forward[l] = Update[l]->forward[l];
-                        Update[l]->forward[l] = newSeg;
-                        Update[l] = newSeg;
+                        preds[l]->forward[l] = newSeg;
+                        newSeg->forward[l] = succs[l];
+                        preds[l] = newSeg;
                     }
+                    newSeg->fullyLinked = true;
                     list->segCnt++;
                 }
                 if(i >= _size -2)
@@ -833,19 +1156,19 @@ void Segment_pt::SplitSegment(Segment_pt** Update,skiplist* list,unsigned int *_
     //     split_++;
     //     subtree*new_subtree = rebuild_tree(_keys+st_idx,_values+st_idx,_size-st_idx,_keys[st_idx],_keys[_size-1]+1);
     //     if(st_idx == 0){
-    //         this->DataArray = new_subtree;
-    //         for(int l = this->level;l>=1;l--){
-    //             Update[l] = this;
-    //         }
+    //         root->DataArray = new_subtree;
+    //         //for(int l = root->level;l>=1;l--){
+    //         //    Update[l] = root;
+    //         //}
     //     }
     //     else{
     //         //Update 应保存 每层都在newSeg左边的segment
     //         Segment_pt* newSeg = new Segment_pt(list->RandLevel(),new_subtree);
-    //         if(newSeg->level > list->skip_level){
-    //             for(int l = newSeg->level;l>list->skip_level;l--){
-    //                 Update[l] = list->header;
+    //         if(newSeg->level > list->max_height_){
+    //             for(int l = newSeg->level;l>list->max_height_;l--){
+    //                 Update[l] = list->head_;
     //             }
-    //             list->skip_level = newSeg->level;
+    //             list->max_height_ = newSeg->level;
     //         }
     //         for(int l = newSeg->level;l>=1;l--){
     //             newSeg->forward[l] = Update[l]->forward[l];
@@ -859,11 +1182,12 @@ void Segment_pt::SplitSegment(Segment_pt** Update,skiplist* list,unsigned int *_
     // cerr<<"split_:"<<split_<<endl;
 #else
     int right_part = _size - middle;
-
     subtree* new_subtree1 = nullptr;
     subtree* new_subtree2 = nullptr;
+    #if WRITESEG
     string kk = to_string(middle)+","+to_string(right_part);
     write_into_file("./split.txt",kk.c_str());
+    #endif
    if(middle >= right_part){
         if(middle <= _size-2){
             new_subtree1 = rebuild_tree(_keys,_values,middle,_start,_keys[middle]);
@@ -882,31 +1206,13 @@ void Segment_pt::SplitSegment(Segment_pt** Update,skiplist* list,unsigned int *_
         }
         else{
             new_subtree1 = rebuild_tree(_keys,_values,middle,_start,_stop);
-            this->DataArray = new_subtree1;
+            root->DataArray = new_subtree1;
             // cerr<<"split end"<<endl;
             return ;
         }
 #if DEBUG
-        cerr<<"replace "<<this->DataArray<<"with "<<new_subtree1<<",insert a new top subtree "<<new_subtree2<<endl;
-#endif
-        this->DataArray = new_subtree1;
-        Segment_pt* newSeg = new Segment_pt(list->RandLevel(),new_subtree2);
-        if(newSeg->level > list->skip_level){
-            for(int i = newSeg->level;i>list->skip_level;i--){
-                Update[i] = list->header;
-            }
-            list->skip_level = newSeg->level;
-        }
-        if(newSeg->level > this->level){
-            for(int i = newSeg->level;i>this->level;i--){
-                newSeg->forward[i] = Update[i]->forward[i];
-                Update[i]->forward[i] = newSeg;
-            }
-        }
-        for(int i =min(this->level,newSeg->level);i>=1;i--){
-            newSeg->forward[i] = Update[i]->forward[i]->forward[i];
-            Update[i]->forward[i]->forward[i] = newSeg;
-        }
+        cerr<<"replace "<<root->DataArray<<"with "<<new_subtree1<<",insert a new top subtree "<<new_subtree2<<endl;
+#endif        
    }
    else{
         if(middle >= 2){//right_part <= _size-2
@@ -927,41 +1233,34 @@ void Segment_pt::SplitSegment(Segment_pt** Update,skiplist* list,unsigned int *_
         }
         else{
             new_subtree1 = rebuild_tree(_keys,_values,right_part,_start,_stop);
-            this->DataArray = new_subtree1;
+            root->DataArray = new_subtree1;
 #if DEBUG
             cerr<<"split end"<<endl;
 #endif
             return ;
         }
 #if DEBUG
-        cerr<<"replace "<<this->DataArray<<"with "<<new_subtree1<<",insert a new top subtree "<<new_subtree2<<endl;this->DataArray = new_subtree1;
+        cerr<<"replace "<<root->DataArray<<"with "<<new_subtree1<<",insert a new top subtree "<<new_subtree2<<endl;root->DataArray = new_subtree1;
 #endif
-        this->DataArray = new_subtree1;
-        Segment_pt* newSeg = new Segment_pt(list->RandLevel(),new_subtree2);
-        if(newSeg->level > list->skip_level){
-            for(int i = newSeg->level;i>list->skip_level;i--){
-                Update[i] = list->header;
-            }
-            list->skip_level = newSeg->level;
-        }
-        if(newSeg->level > this->level){
-            for(int i = newSeg->level;i>this->level;i--){
-                newSeg->forward[i] = Update[i]->forward[i];
-                Update[i]->forward[i] = newSeg;
-            }
-        }
-        for(int i =min(this->level,newSeg->level);i>=1;i--){
-            newSeg->forward[i] = Update[i]->forward[i]->forward[i];
-            Update[i]->forward[i]->forward[i] = newSeg;
-        }
    }
-
+    root->DataArray = new_subtree1;
+    Segment_pt* newSeg = new Segment_pt(list->RandLevel(),new_subtree2);
+    if(newSeg->level > list->max_height_){
+        list->max_height_ = newSeg->level;
+    }
+    for(int l = newSeg->level;l>=1;l--){
+        preds[l]->forward[l] = newSeg;
+        newSeg->forward[l] = succs[l];
+        preds[l] = newSeg;
+    }
+    newSeg->fullyLinked = true;
     list->segCnt++;
 #endif  
     cerr<<"split end"<<endl;
+    return true;
 }
 
-Segment_pt::subtree* Segment_pt::build_tree_none(){
+skiplist::subtree* skiplist::build_tree_none(){
     subtree* n = new_subtree(1);
     n->is_two = 0;
     n->build_size = 0;
@@ -983,7 +1282,7 @@ Segment_pt::subtree* Segment_pt::build_tree_none(){
     return n;
 }
 
-Segment_pt::subtree* Segment_pt::build_tree_two(unsigned int key1, int value1, unsigned int key2, int value2,unsigned int start,unsigned int stop,subtree* x)
+skiplist::subtree* skiplist::build_tree_two(unsigned int key1, int value1, unsigned int key2, int value2,unsigned int start,unsigned int stop,subtree* x)
 {
     if (key1 > key2) {
         std::swap(key1, key2);
@@ -993,7 +1292,6 @@ Segment_pt::subtree* Segment_pt::build_tree_two(unsigned int key1, int value1, u
     // static_assert(BITMAP_WIDTH == 8);
 
     subtree* n = NULL;
-    if (pending_two.empty()) {
         n = new_subtree(1);
         n->is_two = 1;
         n->build_size = 2;
@@ -1012,13 +1310,7 @@ Segment_pt::subtree* Segment_pt::build_tree_two(unsigned int key1, int value1, u
             n->none_bitmap[i] = 0xff;
             n->child_bitmap[i] = 0;
         }
-    } else {
-        n = pending_two.top();
-        // n->child_ptr = 0;
-        // memset(n->child_bitmap,0,n->num_items);
-        // memset(n->none_bitmap,0xff,n->num_items);
-        pending_two.pop();
-    }
+
     if(!x){
         n->start = start;
         n->stop = stop;  
@@ -1047,14 +1339,14 @@ Segment_pt::subtree* Segment_pt::build_tree_two(unsigned int key1, int value1, u
     // RT_ASSERT(isfinite(n->intercept));
 
     { // insert key1&value1
-        int pos = predict(n, key1);
+        int pos = n->predict(key1);
         // RT_ASSERT(BITMAP_GET(n->none_bitmap, pos) == 1);
         BITMAP_CLEAR(n->none_bitmap, pos);
         n->items[pos].comp.data.key = key1;
         n->items[pos].comp.data.value = value1;
     }
     { // insert key2&value2
-        int pos = predict(n, key2);
+        int pos = n->predict(key2);
         // RT_ASSERT(BITMAP_GET(n->none_bitmap, pos) == 1);
         BITMAP_CLEAR(n->none_bitmap, pos);
         n->items[pos].comp.data.key = key2;
@@ -1065,7 +1357,7 @@ Segment_pt::subtree* Segment_pt::build_tree_two(unsigned int key1, int value1, u
     return n;
 }
 
-Segment_pt::subtree* Segment_pt::rebuild_tree(unsigned int *_keys,int*  _values,int _size,unsigned int start,unsigned int stop,bool plr,double top_slope,double top_intercept){
+skiplist::subtree* skiplist::rebuild_tree(unsigned int *_keys,int*  _values,int _size,unsigned int start,unsigned int stop,bool plr,double top_slope,double top_intercept){
     RT_ASSERT(_size > 1);
     typedef struct {
             int begin;
@@ -1167,12 +1459,13 @@ Segment_pt::subtree* Segment_pt::rebuild_tree(unsigned int *_keys,int*  _values,
             memset(n->none_bitmap, 0xff, sizeof(bitmap_t) * bitmap_size);
             memset(n->child_bitmap, 0, sizeof(bitmap_t) * bitmap_size);
             int real_put_ele = 0;
-            for (int item_i = predict(n, keys[0]), offset = 0; offset < size; ) {
+            int item_i = n->predict(keys[0]);
+            for (int offset = 0; offset < size; ) {
                 //item_i 表示当前元素应插入的位置
                 //next_i 表示下一个元素应插入的位置
                 int next = offset + 1, next_i = -1;
                 while (next < size) {     
-                    next_i = predict(n, keys[next]);
+                    next_i = n->predict( keys[next]);
                  
 #if DEBUG
                     cerr<<"keys["<<next<<"]"<<keys[next]<<"predict:"<<next_i<<endl;
@@ -1229,7 +1522,6 @@ Segment_pt::subtree* Segment_pt::rebuild_tree(unsigned int *_keys,int*  _values,
                     offset = next;
                 }
             }
-
 #if DEBUG
             cerr<<"real put ele:"<<real_put_ele<<"in "<<n<<"n:size:"<<n->size<<"diff:"<<n->size-real_put_ele<<endl;
 #endif
@@ -1250,7 +1542,7 @@ Segment_pt::subtree* Segment_pt::rebuild_tree(unsigned int *_keys,int*  _values,
 
 }
 
-std::pair<long double,int> Segment_pt::scan_and_destroy_subtree(subtree* _root,unsigned int*keys,int* values, bool destory){
+std::pair<long double,int> skiplist::scan_and_destroy_subtree(subtree* _root,unsigned int*keys,int* values, bool destory){
     typedef std::pair<int, subtree*> Seg; // <begin, subtree*>
     std::stack<Seg> s;
     s.push(Seg(0, _root));
@@ -1311,26 +1603,26 @@ std::pair<long double,int> Segment_pt::scan_and_destroy_subtree(subtree* _root,u
         RT_ASSERT(SHOULD_END_POS == begin);
 #endif
         if (destory) {
-            if (n->is_two) {
-                RT_ASSERT(n->build_size == 2);
-                RT_ASSERT(n->num_items == 32);
-                n->size = 2;
-                n->num_inserts = n->num_insert_to_data = 0;
-                // n->none_bitmap[0] = 0xff;
-                // n->child_bitmap[0] = 0;
-                for(int _=0;_<4;_++){
-                    n->none_bitmap[_] = 0xff;
-                    n->child_bitmap[_] = 0;
-                }
-                pending_two.push(n);
-            } 
-            else {
+            // if (n->is_two) {
+            //     RT_ASSERT(n->build_size == 2);
+            //     RT_ASSERT(n->num_items == 32);
+            //     n->size = 2;
+            //     n->num_inserts = n->num_insert_to_data = 0;
+            //     // n->none_bitmap[0] = 0xff;
+            //     // n->child_bitmap[0] = 0;
+            //     for(int _=0;_<4;_++){
+            //         n->none_bitmap[_] = 0xff;
+            //         n->child_bitmap[_] = 0;
+            //     }
+            //     pending_two.push(n);
+            // } 
+            // else {
                 delete_items(n->items, n->num_items);
                 const int bitmap_size = BITMAP_SIZE(n->num_items);
                 delete_bitmap(n->none_bitmap, bitmap_size);
                 delete_bitmap(n->child_bitmap, bitmap_size);
                 delete_subtree(n, 1);
-            }
+            // }
         }
     } 
     file_num++;
@@ -1353,16 +1645,14 @@ std::pair<long double,int> Segment_pt::scan_and_destroy_subtree(subtree* _root,u
     return {1,mark};
 }
 
-void Segment_pt::insert_subtree(unsigned int key,int value,Segment_pt** Update,skiplist* list){
-    // constexpr int MAX_DEPTH = 10;
-    subtree* path[MAX_DEPTH];
-    int path_size = 0;
+void skiplist::insert_subtree(Segment_pt* root,unsigned int key,int value,subtree* path[],int &path_size){
     int insert_to_data = 0;
-    subtree* n = this->DataArray;
+    subtree* n = root->DataArray;
     while(1){
-        path[path_size++] = n;
-        n->stop = max(n->stop,key);
-        int pos = predict(n,key);
+        path[path_size] = n;
+        path_size++;
+        // n->stop = max(n->stop,key);
+        int pos = n->predict(key);
         if (BITMAP_GET(n->none_bitmap, pos) == 1) {
                 RT_ASSERT(BITMAP_GET(n->child_bitmap, pos) == 0);
                 BITMAP_CLEAR(n->none_bitmap, pos);
@@ -1379,20 +1669,12 @@ void Segment_pt::insert_subtree(unsigned int key,int value,Segment_pt** Update,s
                 n->num_inserts++; 
                 break;
             }
-            collsion++;
-            
             if(path_size == 1 && n->size == 1){
                 //从tree_one到tree_two，将tree_one作为参数传入后限制start、stop范围
                 subtree* newtree =  build_tree_two(key, value, n->items[pos].comp.data.key, n->items[pos].comp.data.value,0,0,n);
-                memcpy(this->DataArray, newtree, sizeof(subtree));
-                path[0] = this->DataArray;
+                memcpy(root->DataArray, newtree, sizeof(subtree));
+                path[0] = root->DataArray;
                 delete_subtree(newtree, 1);
-#if DEBUG
-                if(!checkTree(this->DataArray)){
-                    cerr<<"checkTree false"<<endl;
-                    RT_ASSERT(0);
-                }
-#endif
                 break;
             }
             std::pair<unsigned int,unsigned int>line = computeRange(pos,n);
@@ -1406,7 +1688,8 @@ void Segment_pt::insert_subtree(unsigned int key,int value,Segment_pt** Update,s
             n->num_inserts++;
             n->items[pos].comp.child  = build_tree_two(key, value, n->items[pos].comp.data.key, n->items[pos].comp.data.value,min(line.first,min(key,n->items[pos].comp.data.key)),line.second);
             insert_to_data = 1;
-            
+            path[path_size] = n->items[pos].comp.child;
+            path_size++;
             break;
         } else {
             n->size++;
@@ -1429,13 +1712,306 @@ void Segment_pt::insert_subtree(unsigned int key,int value,Segment_pt** Update,s
         path[i]->num_insert_to_data += insert_to_data;
     }
 
+}
+
+/////////////////////////////////////////////
+
+skiplist::Segment_pt* skiplist::Scan(skiplist::State* proc_state){
+    Segment_pt* ppred = nullptr;
+    Segment_pt* pred = head_;
+    Segment_pt* curr = nullptr;
+    Segment_pt* succ = nullptr;
+    Segment_pt* locate = nullptr;
+    int max_height = max_height_.load(memory_order_relaxed);
+    for(int l = MaxLevel-1;l>=max_height;l--){
+        proc_state->preds[l] = head_;
+        proc_state->succs[l] = tail_;
+    }
+    for(int l = max_height-1;l>=0;l--){
+        //not sure key > curr's anchor
+        curr = pred->Next(l);
+        succ = curr->Next(l);   
+        while(succ && succ->anchor <= proc_state->key){
+            ppred = pred;
+            pred = curr;
+            curr = succ;
+            succ = succ->Next(l);
+        }
+        if(proc_state->key >= curr->bound){
+            //key is bwtween curr and succ
+            ppred = pred;
+            pred = curr;//curr != tail_
+        }else{
+            //key is before or located in curr
+            if(!locate && proc_state->key >= curr->anchor){
+                //key is located in curr
+                locate = curr;
+                for(;l>=0;l--){
+                    proc_state->preds[l] = curr;
+                    proc_state->succs[l] = curr->Next(l);
+                }
+                return locate;
+            }
+            //key is rebore curr
+            succ = curr;
+        }
+        if(pred->NoBarrier_Next(l) != succ){
+            cerr<<"no";
+        }
+        proc_state->preds[l] = pred;
+        proc_state->succs[l] = succ;
+    }
+    return locate;
+}
+
+std::pair<int,int> skiplist::Seek(State* proc_state){
+    std::pair<int,node*> res =  find_subtree(proc_state->currs[0]->DataArray,proc_state->key);
+    if(res.first){
+        return {res.first,res.second->value};
+    }else{
+        return {0,0};
+    }
+}
+
+bool skiplist::LockAndValidateUntil(Segment_pt* from[],Segment_pt* to[],int level){
+    Segment_pt* pre_ = from[0];
+    if(!pre_->CASLock()){
+        return false;
+    }
+    for(int l = 0;l<level;l++){
+        // Acquire(from[l]->lock);
+        ///如果该segment被锁，当前process是应该挂起还是循环
+        if(!from[l]){
+            cerr<<"why empty"<<endl;
+        }
+        if((pre_ != from[l] || from[l] != head_) && !from[l]->CASLock())
+            //避免重复锁
+            return false;
+        bool result = !(from[l]->marked) && from[l]->Next(l) == to[l];
+        if(!result){
+            //from[l]--from[0] get lock
+            UnlockUntil(from,l+1);
+            return false;
+        }      
+        pre_ = from[l]; 
+    }
+    return true;
+}
+
+bool skiplist::LockAndValidateUntil(Segment_pt* from[],Segment_pt* to[],int from_level,int to_level){
+    if(from_level < to_level){
+        Segment_pt* pre_ = from[from_level];
+        if(!pre_->CASLock()){
+            return false;
+        }
+        for(int l = from_level;l<to_level;l++){
+            // Acquire(from[l]->lock);
+            ///如果该segment被锁，当前process是应该挂起还是循环
+            if(pre_ != from[l]  && !from[l]->CASLock())
+                //避免重复锁
+                return false;
+            bool result = !(from[l]->marked) && from[l]->Next(l) == to[l];
+            if(!result){
+                //from[l]--from[from_level] get lock
+                UnlockUntil(from,from_level,l+1);
+                return false;
+            }      
+            pre_ = from[l]; 
+        }
+    }
+    for(int l = 0;l<from_level;l++){
+        bool result = !(from[l]->marked) && from[l]->Next(l) == to[l];
+        if(!result)
+            return false;
+    }
+    return true;
+}
+
+void skiplist::UnlockUntil(Segment_pt* from[],int level){
+    //release[0,level)
+    for(int l = level-1;l>=0;l--){
+        // Release(from[l]->lock);
+        from[l]->RealseLock();
+    }
+}
+
+void skiplist::UnlockUntil(Segment_pt* from[],int from_level,int to_level){
+    //release[from_level,to_level])
+    for(int l = from_level;l<to_level;l++){
+        from[l]->RealseLock();
+    }
+}
+
+std::pair<int,int> skiplist::Lookup(State* proc_state){
+    Segment_pt* locate = Scan(proc_state);
+    if(locate == nullptr){
+        return {0,0};
+    }
+    // if(proc_state->currs[0]->anchor > proc_state->key || proc_state->currs[0]->DataArray->stop >= proc_state->key ){
+    //     return {0,0};
+    // }
+    std::pair<int,node*> res = find_subtree(locate->DataArray,proc_state->key);
+    if(res.first){
+        return {res.first,res.second->value};
+    }else{
+        return {0,0};
+    }
+}
+
+// std::pair<int,node*> skiplist::Search(unsigned int key){
+//     // Segment_pt* x = this->head_;
+//     // // unsigned int pred;
+//     // for(int i = this->max_height_;i>=1;i--){
+//     //     while(key >= x->forward[i]->DataArray->stop){
+//     //         x = x->forward[i];
+//     //         jmp_seg++;
+//     //     }
+//     //     if(key >= x->forward[i]->DataArray->start){
+//     //         x = x->forward[i];
+//     //         std::pair<int,node*> res = find_subtree(x->DataArray,key);
+//     //         //this->binarySearch(x,key);
+//     //        return res;
+//     //     }
+//     //     jmp_seg++;
+//     // }    
+//     // return {0,0};
+//     int max_height = this->GetMaxHeight();
+//     Segment_pt* before = this->head_;
+//     for(int level = max_height;level>=0;level--){
+//         while (true) {
+//             Segment_pt* next = before->Next(level);
+//             if (next != nullptr) {
+//                 PREFETCH(next->Next(level), 0, 1);
+//             }
+//             if (next != nullptr && level>0) {
+//                 PREFETCH(next->Next(level-1), 0, 1);
+//             }
+//             // if(!(before == head_ || next == nullptr ||next->DataArray->start >= before->DataArray->stop)){
+//             //     cerr<<"look"<<endl;
+//             // }
+//             assert(before == head_ || next == nullptr ||next->DataArray->start >= before->DataArray->stop);
+//            
+//             // if(!(before == head_ || key >= before->DataArray->stop)){
+//             //     cerr<<"aa"<<endl;
+//             // }
+//             assert(before == head_ || key >= before->DataArray->stop);
+//
+//             //before-->next key may bwtween before and next ,may in next
+//             if (next == nullptr || KeyIsntAfterNode(key, next)) {
+//                 // found it
+//                 if(next != nullptr && KeyIsAfterNodeStart(key,next)){
+//                     // locate = next;
+//                     return find_subtree(next->DataArray,key);
+//                 }
+//                 break;
+//             }
+//             before = next;
+//         }
+//     }
+//     return {0,nullptr};
+//
+// }
+
+// bool skiplist::Insert(unsigned int key,int value){
+//     Segment_pt* prev[MaxLevel+1];
+//     Segment_pt* next[MaxLevel+1];
+//     Splice splice;
+//     splice.prev_ = prev;
+//     splice.next_ = next;
+//     int maxlvl = GetMaxHeight();
+//     splice.height_ = maxlvl;
+//     for(int i=maxlvl;i<=MaxLevel;i++){
+//         splice.prev_[i] = head_;
+//         splice.next_[i] = nullptr;
+//     }
+//
+//     Segment_pt* locate = nullptr;
+//     while(!locate){
+//         //可以优化
+//         RecomputeSpliceLevels(key, &splice, maxlvl,&locate);
+//     }
+//     subtree* path[MAX_DEPTH];
+//     int path_size = 0;
+//     insert_subtree(locate,key,value,path,path_size);
+//     //lock locate
+//     for(int i = 0;i<path_size;i++){
+//         subtree *n = path[i];
+//         const bool need_rebuild =  path_size >= MAX_DEPTH ;
+//         if(need_rebuild){
+//             const int ESIZE = n->size;
+//             unsigned int* keys = new unsigned int[ESIZE];
+//             int* values = new int[ESIZE];
+//             unsigned int n_start = n->start,n_stop = n->stop;
+//             memset(keys,0,ESIZE);
+//             memset(values,0,ESIZE);
+//             std::pair<long double,int> res = scan_and_destroy_subtree(n,keys,values);
+//             scan_+=ESIZE;
+//             // cerr<<"lin:"<<res.first<<"\t"<<ESIZE<<endl;
+//             if(!i && ((res.first < LINAERITY )|| ESIZE >1e6)){//|| ESIZE > 1e6
+//                 split_cnt++;
+// #if WRITESEG
+//                 string kk = "\nheight:"+to_string(path_size)+"pccs:"+to_string(res.first)+"\tele number:"+to_string(ESIZE)+"\n";
+//                 write_into_file("./split.txt",kk.c_str());
+// #endif
+//                 SplitSegment(locate,splice.prev_, splice.next_,this,keys,values,ESIZE,res.first,res.second,n_start,n_stop);
+//             }
+//             else{
+//                 rebuild_cnt++;
+//                 subtree* newsubtree = rebuild_tree(keys,values,ESIZE,n_start,n_stop);
+//                 if(i){
+//                     int pos = path[i-1]->predict(key);
+//                     RT_ASSERT(BITMAP_GET(path[i-1]->none_bitmap, pos) == 0);
+//                     RT_ASSERT(BITMAP_GET(path[i-1]->child_bitmap, pos) == 1);
+//                     path[i-1]->items[pos].comp.child = newsubtree;
+//                 }
+//                 else{
+//                     locate->DataArray = newsubtree;
+//                 }
+//             }    
+//             delete[] keys;
+//             delete[] values;            
+//             return true;
+//         }
+//     }
+//     //free locate
+//     return true;
+// }
+
+
+
+bool skiplist::Insert(State* proc_state){
+    while(true){
+        Segment_pt* locate = Scan(proc_state);
+        if(locate == head_ || locate == tail_ || !locate){
+            for(int i = 0;i<10000;i++);
+            continue;
+        }
+        if(locate->CASLock()){
+            // Acquire(proc_state->currs[0].lock);
+            Add(proc_state,locate);
+            locate->RealseLock();
+            // Release(proc_state->currs[0].lock);
+            break;
+        }else{
+            for(int i = 0;i<10000;i++);
+        }
+        // int result = Add(proc_state);
+        
+        // if(result == FAILURE) continue;
+        // else return result == ADDED?true :false;
+    }
+    return true;
+}
+
+int skiplist::Add(State* proc_state,Segment_pt* locate){
+    subtree* path[MAX_DEPTH];
+    int path_size = 0;
+    insert_subtree(locate,proc_state->key,proc_state->value,
+    path,path_size);
+    int key = proc_state->key;
     for(int i = 0;i<path_size;i++){
-        n = path[i];
-        // const int num_inserts = n->num_inserts;
-        // const int num_insert_to_data = n->num_insert_to_data;
-        //(n->size > 64 && (n->size*1.0/(n->stop - n->start) < 0.5))
-        const bool need_rebuild =  path_size >= MAX_DEPTH ;//|| ( n->fixed == 0 && n->size >= n->build_size * 4 && n->size >= 64 && num_insert_to_data * 10 >= num_inserts);
-        // int T;
+        subtree *n = path[i];
+        const bool need_rebuild =  path_size >= MAX_DEPTH ;
         if(need_rebuild){
             const int ESIZE = n->size;
             unsigned int* keys = new unsigned int[ESIZE];
@@ -1443,242 +2019,96 @@ void Segment_pt::insert_subtree(unsigned int key,int value,Segment_pt** Update,s
             unsigned int n_start = n->start,n_stop = n->stop;
             memset(keys,0,ESIZE);
             memset(values,0,ESIZE);
+            if(!locate->CASBuild()){
+                //to fix
+                delete[] keys;
+                delete[] values; 
+                return true;
+            }
             std::pair<long double,int> res = scan_and_destroy_subtree(n,keys,values);
             scan_+=ESIZE;
-            // scan_and_destroy_subtree(n,keys,values);
-            // cerr<<"lin:"<<res.first<<"\t"<<ESIZE<<endl;
-            if(!i && ((res.first < LINAERITY && ESIZE>1e5 )|| ESIZE >1e6)){//|| ESIZE > 1e6
-                split_cnt++;
-#if WRITESEG
-                string kk = "\nheight:"+to_string(path_size)+"pccs:"+to_string(res.first)+"\tele number:"+to_string(ESIZE)+"\n";
-                write_into_file("./split.txt",kk.c_str());
-#endif
-                SplitSegment(Update,list,keys,values,ESIZE,res.first,res.second,n_start,n_stop);
+            cerr<<"lin:"<<res.first<<"\t"<<ESIZE<<endl;
+            if(!i && ((res.first < LINAERITY )|| ESIZE >1e6)){//|| ESIZE > 1e6
+                if(SplitSegment(locate,proc_state,this,keys,values,ESIZE,res.first,res.second,n_start,n_stop)){
+                    locate->RealseBuild();
+                    delete[] keys;
+                    delete[] values;         
+                    return true;
+                }
+                cerr<<"LockAndValidateUntil failed"<<endl;
+            }
+            cerr<<"rebuild"<<endl;
+            subtree* newsubtree = rebuild_tree(keys,values,ESIZE,n_start,n_stop);
+            if(i){
+                int pos = path[i-1]->predict(key);
+                RT_ASSERT(BITMAP_GET(path[i-1]->none_bitmap, pos) == 0);
+                RT_ASSERT(BITMAP_GET(path[i-1]->child_bitmap, pos) == 1);
+                path[i-1]->items[pos].comp.child = newsubtree;
             }
             else{
-                rebuild_cnt++;
-                subtree* newsubtree = rebuild_tree(keys,values,ESIZE,n_start,n_stop);
-                if(i){
-                    int pos = predict(path[i-1],key);
-                    RT_ASSERT(BITMAP_GET(path[i-1]->none_bitmap, pos) == 0);
-                    RT_ASSERT(BITMAP_GET(path[i-1]->child_bitmap, pos) == 1);
-                    path[i-1]->items[pos].comp.child = newsubtree;
-                }
-                else{
-                    this->DataArray = newsubtree;
-                }
-            }    
-#if DEBUG
-            cerr<<"(level:"<<i<<")replace it with"<<newsubtree<<" it's child ptr:"<<newsubtree->child_ptr<<endl;
-#endif
+                locate->DataArray = newsubtree;
+            }
+            locate->RealseBuild();
             delete[] keys;
             delete[] values;            
-            return;
+            return true;
         }
     }
-
+    return true;
 }
 
-std::pair<int,node*> Segment_pt::find_subtree(unsigned int key){
-    subtree* n = this->DataArray;
-    while(1){
-        int pos = predict(n,key);
-        if (BITMAP_GET(n->none_bitmap, pos) == 1) {
-            //checkTypeEqualNull
-            break;
-            // return {false,0};
-        }
-        else if(BITMAP_GET(n->child_bitmap, pos) == 0){
-            //checkTypeEqualData
-            return {n->items[pos].comp.data.key == key,&(n->items[pos].comp.data)};
-        }
-        else{
-            jmp_subtree++;
-            n = n->items[pos].comp.child;
-        }
-    }
-    return {false,0};
-}
+// void skiplist::show(){
+//     Segment_pt* x = head_;
+//     int depth = 0;
+//     unsigned int pre_stop = 0;
+//     for(int i = 0;i<segCnt;i++){
+//         x = x->forward[1];
+//         // cerr<<"Segment_pt level:"<<x->level<<" start:"<<x->DataArray->start<<" stop:"<<x->DataArray->stop<<" slope:"<<x->DataArray->slope<<" intertectpt:"<<x->DataArray->intercept<<"\n";
+//         // cerr<<"Segment_pt ele cnt"<<x->DataArray->size<<" start:"<<x->DataArray->start<<" stop:"<<x->DataArray->stop;
+//         if(i && pre_stop != x->DataArray->start){
+//             cerr<<"?"<<endl;
+//         }
+//         pre_stop = x->DataArray->stop;
+//         typedef std::pair<int, subtree*> Seg; // <begin, subtree*>
+//         std::stack<Seg> s;
+//         s.push(Seg(1, x->DataArray));
+//         int d = 0;
+//         while (!s.empty()) {
+//             Segment_pt::subtree* n = s.top().second;
+//             int l = s.top().first;
+//             d = max(d,l);
+//             s.pop();
+//             for (int j = 0; j < n->num_items; j ++) {
+//                 if (BITMAP_GET(n->none_bitmap, j) == 0) {
+//                     if (BITMAP_GET(n->child_bitmap, j) == 1) {
+//                         s.push(Seg(l+1,n->items[j].comp.child));
+//                     }
+//                 }
+//             }
+//         }
+//         // cerr<<"\tsegment max depth:"<<d<<endl;
+//         depth+=d;
+//     }
+//     cerr<<"average depth:"<<depth/segCnt<<endl;
+//
+// }
 
-long long Segment_pt::Computespace(){
-    long long space = 0;
-    space+=sizeof(Segment_pt);
-    space+=(forward.capacity() * sizeof(Segment_pt*));
-    std::queue<subtree*> s;
-    s.push(DataArray);
-    while(!s.empty()){
-        subtree* n = s.front();
-        s.pop();
-        
-        space+=sizeof(subtree);
-        
-        if(n->size == 1){
-            space+=(sizeof(Item));
-            space+=(sizeof(bitmap_t) * 2);
-        }
-        else{
-            const int bitmap_size = BITMAP_SIZE(n->num_items);
-            //items
-            space+=(n->num_items * sizeof(Item));
-            //bitmap
-            space+=( bitmap_size * sizeof(bitmap_t) *2);
-            for(int i = 0;i<n->num_items;i++){
-                if(BITMAP_GET(n->child_bitmap,i)){
-                    s.push(n->items[i].comp.child);
-                }
-            }
-        }
-    }
-    // space-=(DataArray->size*8);
-    return space;
-    
-}
-
-/////////////////////////////////////////////
-
-std::pair<int,node*> skiplist::Search(unsigned int key){
-    Segment_pt* x = this->header;
-    // unsigned int pred;
-    for(int i = this->skip_level;i>=1;i--){
-        while(key >= x->forward[i]->DataArray->stop){
-            x = x->forward[i];
-            jmp_seg++;
-        }
-        if(key >= x->forward[i]->DataArray->start){
-            x = x->forward[i];
-            std::pair<int,node*> res = x->find_subtree(key);
-            //this->binarySearch(x,key);
-           return res;
-        }
-        jmp_seg++;
-    }    
-    return {0,0};
-
-}
-
-void skiplist::Insert(unsigned int key,int value){
-    Segment_pt* x = this->header;
-    Segment_pt* x_next = nullptr;
-    Segment_pt** Update = nullptr;//store the predecessor in different level of locating segment
-    Update = (Segment_pt**)malloc(sizeof(Segment_pt*)*(this->MaxLevel+1));
-    // for(int i = 1;i<=this->MaxLevel;i++){
-    //     Update[i] = this->header;
-    // }
-    Segment_pt* locate = nullptr;
-    for(int i = this->skip_level;i>=1;i--){
-        x_next = x->forward[i];
-        while(key >= x_next->forward[i]->DataArray->start){
-        //if segment's number of element is 1,x turn forward only when key >= stop
-        //if segment's number of element > 1,x turn forward only when key > stop
-            x = x_next;
-            x_next = x_next->forward[i];
-        }
-        //key < x_next->for[i]->start
-        if(key >= x_next->DataArray->stop){
-            Update[i] = x_next;
-            x = x_next;
-            continue;
-        }
-        else
-            Update[i] = x;
-        //insure key < x_next stop 
-        if(!locate && (key >= x_next->DataArray->start)){
-            //(key > x_next->DataArray->start && x_next->DataArray->size == 1)||
-            //if segment's number of element is 1,locate segment only when key > start
-            //if segment's number of element >1,locate segment only when key>=start
-            locate = x_next;
-        }
-    }
-
-    if(locate){
-        // std::pair<int,Segment_pt::Item*> find_ = locate->find_subtree(key);
-        // if(find_.first){
-        //     (find_.second)->comp.data.value = value;
-        //     return;
-        // }
-        locate->insert_subtree(key,value,Update,this);
-    }
-    else{
-        //create a new segment
-        cerr<<"create "<<endl;
-        Segment_pt* newSeg = new Segment_pt(this->RandLevel());
-        newSeg->DataArray->size++;
-        newSeg->DataArray->num_inserts++;
-        newSeg->DataArray->items[0].comp.data.key = key;
-        newSeg->DataArray->items[0].comp.data.value = value;
-        BITMAP_CLEAR(newSeg->DataArray->none_bitmap, 0);
-        if(newSeg->level > this->skip_level){
-            for(int i = newSeg->level;i>this->skip_level;i--){
-                Update[i] = this->header;
-            }
-            this->skip_level = newSeg->level;
-        }
-        newSeg->DataArray->stop = Update[1]->forward[1]->DataArray->start;
-        for(int i = 1;i<=newSeg->level;i++){
-            newSeg->forward[i] = Update[i]->forward[i];
-            Update[i]->forward[i] = newSeg;
-        }
-        if(Update[1] == this->header){
-            newSeg->DataArray->start = 0;
-        }else{
-            newSeg->DataArray->start = Update[1]->DataArray->stop;
-        }
-        this->segCnt++;
-    }
-}
-
-void skiplist::show(){
-    Segment_pt* x = header;
-    int depth = 0;
-    unsigned int pre_stop = 0;
-    for(int i = 0;i<segCnt;i++){
-        x = x->forward[1];
-        // cerr<<"Segment_pt level:"<<x->level<<" start:"<<x->DataArray->start<<" stop:"<<x->DataArray->stop<<" slope:"<<x->DataArray->slope<<" intertectpt:"<<x->DataArray->intercept<<"\n";
-        // cerr<<"Segment_pt ele cnt"<<x->DataArray->size<<" start:"<<x->DataArray->start<<" stop:"<<x->DataArray->stop;
-        if(i && pre_stop != x->DataArray->start){
-            cerr<<"?"<<endl;
-        }
-        pre_stop = x->DataArray->stop;
-        typedef std::pair<int, Segment_pt::subtree*> Seg; // <begin, subtree*>
-        std::stack<Seg> s;
-        s.push(Seg(1, x->DataArray));
-        int d = 0;
-        while (!s.empty()) {
-            Segment_pt::subtree* n = s.top().second;
-            int l = s.top().first;
-            d = max(d,l);
-            s.pop();
-            for (int j = 0; j < n->num_items; j ++) {
-                if (BITMAP_GET(n->none_bitmap, j) == 0) {
-                    if (BITMAP_GET(n->child_bitmap, j) == 1) {
-                        s.push(Seg(l+1,n->items[j].comp.child));
-                    }
-                }
-            }
-        }
-        // cerr<<"\tsegment max depth:"<<d<<endl;
-        depth+=d;
-    }
-    cerr<<"average depth:"<<depth/segCnt<<endl;
-
-}
-
-void skiplist::ComputeSpace(){
-    long long space = 0;
-    Segment_pt *x = this->header;
-    space+=sizeof(this);
-    //header
-    while (x && x->forward[1] != this->header) {
-        space+=x->Computespace();
-        x = x->forward[1];
-        // cerr<<"segment predict error sum cost on per key:"<<x->DataArray->cost/x->DataArray->size<<endl;
-    }
-
-    cerr<<"space size:"<<space<<endl;
-    char space_size_data[] = "./space_size.csv";
-    string k = to_string(space)+"\n";
-    write_into_file(space_size_data,k.c_str());
-}
+// void skiplist::ComputeSpace(){
+//     long long space = 0;
+//     Segment_pt *x = this->head_;
+//     space+=sizeof(this);
+//     //head_
+//     while (x && x->forward[1] != this->head_) {
+//         space+=x->Computespace();
+//         x = x->forward[1];
+//         // cerr<<"segment predict error sum cost on per key:"<<x->DataArray->cost/x->DataArray->size<<endl;
+//     }
+//
+//     cerr<<"space size:"<<space<<endl;
+//     char space_size_data[] = "./space_size.csv";
+//     string k = to_string(space)+"\n";
+//     write_into_file(space_size_data,k.c_str());
+// }
 
 
 

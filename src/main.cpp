@@ -1,167 +1,161 @@
-/*
-this version is based on subtree + pccs split + split with (greedy plr / random / greedy pccs)
-*/
-
 #include "../include/skiplist.hpp"
-#include <time.h>
-#include <set>
-
+#include <iostream>
+#include <thread>
 
 #define MM 1000000
-#define NUMBERDATA (24*MM)
-#define MaxL 8//(int)(log(NUMBERDATA)/log(2))
-#define Verify 0
+#define NUMBERDATA (1*MM)
+#define PREINSERT 0//(4*MM)
+#define SkiplistMaxLevel 8//(int)(log(NUMBERDATA)/log(2))
+#define THREAD_NUMBER 4
 #define NOFINDDEBUG 0
-#define PPROF 0
 
-#if PPROF
-    #include<gperftools/profiler.h>
-#endif
-
-using namespace std;
-
-int length;
-// vector<snode> dataInput;
-// vector<unsigned int> dataq0(NUMBERDATA);
-int MaxLevel = 0;
-vector<snode> nofind;
+int key_dis = NUMBERDATA/THREAD_NUMBER;
+// unsigned int dataq0[] = {1,2,3,4,5,6,7,8,9,10,11,12};
 unsigned int *dataq0 = new unsigned int[NUMBERDATA];
-char search_time[] = "./search_time.csv";
-char insert_time[] = "./insert_time.csv";
-// set<unsigned> keys_unique;
+skiplist *list = new skiplist(SkiplistMaxLevel,Gm);
 
-long long real = 0;
-
+using namespace chrono;
 
 void GetData2(){
-    char unique_dadta_file[] = "/home/yhzhou/datasets/unique_iot_web_unique_shuffle.csv";//unique_iot_web_unique_shuffle
+    //ycsb64M
+    // char unique_dadta_file[] = "/home/yhzhou/datasets/unique_iot_web_unique_shuffle.csv";//unique_iot_web_unique_shuffle
     //unique_iot_web_unique
-    ifstream fp(unique_dadta_file);
-    string line;
-    for(int i =0;i<NUMBERDATA;i++){
-        getline(fp,line);
-        dataq0[i] = atoi(line.c_str());
-        // cerr<<"key["<<i<<"]"<<dataq0[i]<<endl;    
+    // vector<unsigned int> dataq0(26900528);
+    // long long length = 0;
+    /*数据集*/
+    // ifstream fp(unique_dadta_file);
+    // string line;
+    // for(int i =0;i<NUMBERDATA;i++){
+    //     getline(fp,line);
+    //     dataq0[i] = atoi(line.c_str());
+    //     // cerr<<"key["<<i<<"]"<<dataq0[i]<<endl;    
+    // }
+    // fp.close();
+    for(int i = 0;i<NUMBERDATA;i++){
+        dataq0[i] = i+1;
     }
-    fp.close();
+    std::random_device rd;
+    std::mt19937 g(rd());
+    std::shuffle(dataq0, dataq0+NUMBERDATA, g);
 }
 
-// void GetData()
-// {
-//     int length = 0;
-//     srand((int)time(0));
-//     unsigned int *dataIoT;
-//     std::ifstream inF("/home/yhzhou/datasets/iotShuffle.bin", std::ios::binary);
-//     inF.seekg(0, inF.end);
-//     length = inF.tellg();
-//     inF.seekg(0, inF.beg);
-//
-//     // std::cerr << length << std::endl;
-//     dataIoT = (unsigned int*)malloc(sizeof(unsigned int) * length);
-//
-//     inF.read(reinterpret_cast<char *>(dataIoT), sizeof(unsigned int) * length);
-//     inF.close();
-//     int j=0;
-//     for(int i = 0;i<length && j<NUMBERDATA;i++){
-//         if(dataIoT[i]!=0 && !keys_unique.count(dataIoT[i])){
-//             dataq0[j] = dataIoT[i];
-//             keys_unique.insert(dataIoT[i]);
-//             j++;
+// void ExpSearch(){
+//     clock_t start,end;
+//     double sumTime = 0;
+// #if NOFINDDEBUG
+//     int nofindcnt = 0;
+// #endif
+//     start = clock();
+//     for (int i = 0; i < NUMBERDATA; i++) {
+//         if(dataq0[i] == UNINT_MAX || dataq0[i] == 0){
+//             continue;
 //         }
+//         // std::pair<int,int> res = list->Lookup(dataq0[i]);  
+// #if NOFINDDEBUG
+//         if(!res.first || (res.second)->key != dataq0[i]){
+//             cerr<<"not find "<<dataq0[i]<<" "<<i<<endl;
+//             nofindcnt++;
+//         }
+//
+// #endif
 //     }
-//     cerr<<"key unique:"<<keys_unique.size()<<endl;
-//     dataq0.resize(j);
-//     length = j;
-//     free(dataIoT);
+//     end = clock();
+//     sumTime =(double(end-start)/CLOCKS_PER_SEC);
+// #if NOFINDDEBUG
+//     cerr<<"no find cnt:"<<nofindcnt<<endl;
+// #endif
+//     cerr<<"Search time = "<<sumTime<<"s"<<endl;  //输出时间（单位：ｓ）
 // }
 
-void ExpSearch(skiplist* list){
-    clock_t start,end;
-    double sumTime = 0;
-#if NOFINDDEBUG
-    int nofindcnt = 0;
-#endif
-    start = clock();
-    for (int i = 0; i < NUMBERDATA; i++) {
-        if(!dataq0[i]) continue;
-        std::pair<bool,node*> res = list->Search(dataq0[i]);  
-#if NOFINDDEBUG
-        if(!res.first || (res.second)->key != dataq0[i]){
-            cerr<<"not find "<<dataq0[i]<<" "<<i<<endl;
-            nofindcnt++;
-        }
-#endif
+// void ExpInsert(){
+//     clock_t start,end;
+//     double sumTime = 0;
+//     // int indx = 0;
+//     start = clock();
+//     for(int i = 0;i<NUMBERDATA;i++){
+//         if(dataq0[i] == UNINT_MAX || dataq0[i] == 0){
+//             continue;
+//         }
+//         list->Insert(dataq0[i],i);
+//     }
+//     end = clock();
+//     sumTime =(double(end-start)/CLOCKS_PER_SEC);
+//     cerr<<"Insert time = "<<sumTime<<"s"<<endl;  //输出时间（单位：ｓ）
+//     // list->show();
+// }
+
+void test(const int id,const int bound_l,const int bound_r ){
+    // cerr<<bound_r<<endl;
+    skiplist::State mystate;
+    mystate.ppreds = (skiplist::Segment_pt**)malloc(sizeof(skiplist::Segment_pt*)*SkiplistMaxLevel);
+    mystate.preds = (skiplist::Segment_pt**)malloc(sizeof(skiplist::Segment_pt*)*SkiplistMaxLevel);
+    mystate.currs = (skiplist::Segment_pt**)malloc(sizeof(skiplist::Segment_pt*)*SkiplistMaxLevel);
+    mystate.succs = (skiplist::Segment_pt**)malloc(sizeof(skiplist::Segment_pt*)*SkiplistMaxLevel);
+    memset(mystate.ppreds,0,sizeof(skiplist::Segment_pt*)*SkiplistMaxLevel);
+    memset(mystate.preds,0,sizeof(skiplist::Segment_pt*)*SkiplistMaxLevel);
+    memset(mystate.currs,0,sizeof(skiplist::Segment_pt*)*SkiplistMaxLevel);
+    memset(mystate.succs,0,sizeof(skiplist::Segment_pt*)*SkiplistMaxLevel);
+    for(int i = bound_l;i<bound_r;i++){
+        // cerr<<i<<endl;
+        mystate.key = dataq0[i];
+        mystate.value = i;
+        // cout<<i<<endl;
+        list->Insert(&mystate);
     }
-    end = clock();
-    sumTime =(double(end-start)/CLOCKS_PER_SEC);
-#if NOFINDDEBUG
-    cerr<<"no find cnt:"<<nofindcnt<<endl;
-#endif
-    cerr<<"Search time = "<<sumTime<<"s"<<endl;  //输出时间（单位：ｓ）
-    string k = to_string(sumTime)+"\n";
-    write_into_file(search_time,k.c_str());
-    cerr<<"Average jmp seg:"<<jmp_seg*1.0/real<<"\tjmp subtree:"<<jmp_subtree*1.0/real<<endl;
-}
-
-void ExpInsert(skiplist* list){
-    clock_t start,end;
-    double sumTime = 0;
-    // int indx = 0;
-#if PPROF
-    ProfilerStart("lipp2.prof");
-#endif
-    start = clock();
-    for(int i = 0;i<NUMBERDATA;i++){
-        if(!dataq0[i]) continue;
-        list->Insert(dataq0[i],i);
-        real++;
-#if NOFINDDEBUG  
-        std::pair<int,node*> res = list->Search(dataq0[i]);
-
-        if(!res.first || (res.second)->value != i){
-            cerr<<"not find "<<dataq0[i]<<" "<<i<<endl;
-        }  
-
-  
-#endif
-    }
-    end = clock();
-#if PPROF
-    ProfilerStop();
-#endif
-    sumTime =(double(end-start)/CLOCKS_PER_SEC);
-    cerr<<"Insert time = "<<sumTime<<"s"<<endl;  //输出时间（单位：ｓ）
-    string k = to_string(sumTime)+"\n";
-    write_into_file(insert_time,k.c_str());
-    cerr<<"scan ele cnt:"<<scan_<<"\tcollision:"<<collsion<<"\trebuild:"<<rebuild_cnt<<"\tsplit"<<split_cnt<<endl;
-    // list->show();
+    free(mystate.ppreds);
+    free(mystate.preds);
+    free(mystate.currs);
+    free(mystate.succs);
 }
 
 int main(){
-    cerr<<"split according to pccs"<<endl;
-    cerr<<"USEPLR:"<<USEPLR<<endl;
-    cerr<<"USEGREEDYPCCS:"<<USEGREEDYPCCS<<endl;
-    cerr<<"LINAERITY:"<<LINAERITY<<endl;
-    cerr<<"MAX_DEPTH:"<<MAX_DEPTH<<endl;
-    cerr<<"MaxL:"<<MaxL<<endl;
     GetData2();
-    cerr<<"total count:"<<NUMBERDATA<<endl;
-    // cerr<<"Max Level:"<<MaxLevel<<endl;
-    skiplist* list = new skiplist(MaxL,Gm);
-
-    ExpInsert(list);
-
-    ExpSearch(list);
-
-    // list->setup(dataInput);
-    // list->ShowNodeDis();
-
-    //show space size
-    list->ComputeSpace();
-    
-    list->show();
-
-    cerr<<"list segments:"<<list->segCnt<<endl;
-
-    return 0;
+    skiplist::State mystate;
+    mystate.ppreds = (skiplist::Segment_pt**)malloc(sizeof(skiplist::Segment_pt*)*SkiplistMaxLevel);
+    mystate.preds = (skiplist::Segment_pt**)malloc(sizeof(skiplist::Segment_pt*)*SkiplistMaxLevel);
+    mystate.currs = (skiplist::Segment_pt**)malloc(sizeof(skiplist::Segment_pt*)*SkiplistMaxLevel);
+    mystate.succs = (skiplist::Segment_pt**)malloc(sizeof(skiplist::Segment_pt*)*SkiplistMaxLevel);
+    memset(mystate.ppreds,0,sizeof(skiplist::Segment_pt*)*SkiplistMaxLevel);
+    memset(mystate.preds,0,sizeof(skiplist::Segment_pt*)*SkiplistMaxLevel);
+    memset(mystate.currs,0,sizeof(skiplist::Segment_pt*)*SkiplistMaxLevel);
+    memset(mystate.succs,0,sizeof(skiplist::Segment_pt*)*SkiplistMaxLevel);
+    srand((int)time(0));
+    cerr<<NUMBERDATA<<endl;
+    cerr<<"THREAD_NUMBER:"<<THREAD_NUMBER<<endl;
+    cerr<<"SkiplistMaxLevel:"<<SkiplistMaxLevel<<endl;
+    std::vector<thread> threads;//(THREAD_NUMBER);
+    const auto start_time = std::chrono::steady_clock::now();
+    //time_point<system_clock> start = system_clock::now();
+    // ProfilerStart("test.prof");
+    // start = clock();
+    for(int i = 0;i<PREINSERT;i++){
+        mystate.key = dataq0[i];
+        mystate.value = i;
+        list->Insert(&mystate);
+    }
+    cerr<<"preinsert finish"<<endl;
+    int kk = PREINSERT;
+    for(int idx=0; idx < THREAD_NUMBER; idx++){
+        threads.push_back(thread(test, idx,kk,kk+key_dis));
+        kk+=key_dis;
+    } 
+    for(int idx=0; idx <THREAD_NUMBER; idx++){
+        threads[idx].join();
+    }
+	// ProfilerStop();
+    const auto end_time = std::chrono::steady_clock::now();
+    const auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
+    std::cout << "insert time: " << duration.count() << "us"<<std::endl;
+    for(int i =0;i<NUMBERDATA;i++){
+        mystate.key = dataq0[i];
+        std::pair<int,int> res = list->Lookup(&mystate);
+        if(!res.first || res.second != i){
+            cerr<<dataq0[i]<<" "<<i<<endl;
+        }
+    }
+    free(mystate.ppreds);
+    free(mystate.preds);
+    free(mystate.currs);
+    free(mystate.succs);
+    // list->showList();
 }
