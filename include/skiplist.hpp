@@ -405,7 +405,7 @@ class skiplist {
             inline bool ReadLock(){
                 return lock.load(std::memory_order_acquire);
             }
-
+            //true means segment is spliting or rebuilding
             inline bool ReadBuildM(){
                 return build.load(std::memory_order_acquire);
             }
@@ -1469,14 +1469,31 @@ skiplist::Segment_pt* skiplist::Scan(skiplist::State* proc_state){
     }
     for(int l = max_height-1;l>=0;l--){
         //not sure key > curr's anchor
+        if(pred->ReadBuildM() == true){
+            return nullptr;
+        }
         curr = pred->Next(l);
+        // if(curr == nullptr && pred == tail_){
+        //     cerr<<"pred = tail curr = null\n";
+        //     cerr<<"level "<<l<<endl;
+        //     cerr<<"ppred ["<<ppred->anchor<<ppred->bound<<")\n";
+        //     cerr<<"key = "<<proc_state->key<<endl;
+        // }
+        RT_ASSERT(curr!=nullptr);
+        if(curr->ReadBuildM() == true){
+            return nullptr;
+        }
         succ = curr->Next(l);   
         while(succ && succ->anchor <= proc_state->key){
             ppred = pred;
             pred = curr;
             curr = succ;
+            if(succ->ReadBuildM() == true){
+                return nullptr;
+            }
             succ = succ->Next(l);
         }
+        
         if(proc_state->key >= curr->bound){
             //key is bwtween curr and succ
             ppred = pred;
@@ -1488,12 +1505,18 @@ skiplist::Segment_pt* skiplist::Scan(skiplist::State* proc_state){
                 locate = curr;
                 for(;l>=0;l--){
                     proc_state->preds[l] = curr;
+                    if(curr->ReadBuildM() == true){
+                        return nullptr;
+                    }
                     proc_state->succs[l] = curr->Next(l);
                 }
                 return locate;
             }
             //key is rebore curr
             succ = curr;
+        }
+        if(pred->ReadBuildM() == true){
+            return nullptr;
         }
         if(pred->NoBarrier_Next(l) != succ){
             return nullptr;
@@ -1544,6 +1567,7 @@ bool skiplist::LockAndValidateUntil(Segment_pt* from[],Segment_pt* to[],int from
         }
         for(int l = from_level;l<to_level;l++){
             // Acquire(from[l]->lock);
+            RT_ASSERT(from[l]!=nullptr);
             ///如果该segment被锁，当前process是应该挂起还是循环
             if(pre_ != from[l]  && !from[l]->CASLock())
                 //避免重复锁
@@ -1558,6 +1582,7 @@ bool skiplist::LockAndValidateUntil(Segment_pt* from[],Segment_pt* to[],int from
         }
     }
     for(int l = 0;l<from_level;l++){
+        RT_ASSERT(from[l]!=nullptr);
         bool result = !(from[l]->marked) && from[l]->Next(l) == to[l];
         if(!result)
             return false;
@@ -1626,10 +1651,10 @@ bool skiplist::Insert(State* proc_state){
 }
 
 int skiplist::Add(State* proc_state,Segment_pt* locate){
-    subtree* path[MAX_DEPTH];
+    subtree* path[MAX_DEPTH*2];
     int path_size = 0;
     insert_subtree(locate,proc_state->key,proc_state->value,path,path_size);
-    int key = proc_state->key;
+    // int key = proc_state->key;
     subtree *n = locate->DataArray;
     const bool need_rebuild =  path_size >= MAX_DEPTH ;
     if(need_rebuild){
