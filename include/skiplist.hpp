@@ -32,7 +32,7 @@ typedef uint8_t bitmap_t;
 #define p 0.5
 #define UNINT_MAX 0xffffffff
 #define Epslion 1e-8
-#define LINAERITY 1.0//0.98
+#define LINAERITY 1.0
 #define USEPLR 1
 #define USEGREEDYPCCS 0
 #define DEBUG 0
@@ -395,6 +395,7 @@ class skiplist {
             // bool rebuild;
             // bool split;
             bool marked;
+            bool split;
             std::atomic<bool> lock;//false means segment is locked
             std::atomic<bool> build;//true means 
             std::atomic<Segment_pt*> *next_;
@@ -696,6 +697,7 @@ class skiplist {
             newseg->bound = bound;
             newseg->DataArray = n;
             newseg->marked = 0;
+            newseg->split = 0;
             // newseg->rebuild = 0;
             // newseg->split = 0;
             newseg->InitLock();
@@ -711,6 +713,7 @@ class skiplist {
             newseg->bound = bound;
             newseg->DataArray = nullptr;
             newseg->marked = 0;
+            newseg->split = 0;
             // newseg->rebuild = 0;
             // newseg->split = 0;
             newseg->InitLock();
@@ -726,6 +729,7 @@ class skiplist {
             newseg->bound = bound;
             newseg->DataArray =  build_tree_none();
             newseg->marked = 0;
+            newseg->split = 0;
             // newseg->rebuild = 0;
             // newseg->split = 0;
             newseg->InitLock();
@@ -887,7 +891,9 @@ class skiplist {
 
 
 bool skiplist::SplitSegment(Segment_pt *root,State* proc_state,skiplist* list,unsigned int *_keys,int*  _values,int _size,long double pccs,int middle,unsigned int _start,unsigned int _stop){
-    // cerr<<"split"<<endl;
+    cerr<<"split"<<endl;
+    string kk = "start: "+to_string(_start)+"\tstop: "+to_string(_stop)+"\n";
+    write_into_file("./split.txt",kk.c_str());
     int st = 0,ed =0;//the rank of the first/last+1 ele of one segment
     GreedyPLR* plr = new GreedyPLR(Gm);
     vector<Segment*> seg;
@@ -942,6 +948,7 @@ bool skiplist::SplitSegment(Segment_pt *root,State* proc_state,skiplist* list,un
     int max_seg_height = root->level;
     Segment_pt** preds = (Segment_pt**)(malloc(sizeof(Segment_pt*)*MaxLevel));
     memcpy(preds,proc_state->preds,sizeof(Segment_pt*)*MaxLevel);
+    root->split = 1;
     for(int i = 1;i<seg_size;i++){
         int height_tmp = height_seq[i-1];//RandLevel();
         unsigned int base = _keys[segment_stIndex[i]];
@@ -949,12 +956,13 @@ bool skiplist::SplitSegment(Segment_pt *root,State* proc_state,skiplist* list,un
          if(i==1){
             root->bound = base;
         }
-        if(i != seg_size){
+        if(i == seg_size-1){//last segment
             bound = _stop;
         }else{
             bound = _keys[segment_stIndex[i+1]];
         }
         Segment_pt* next_seg = NewSegment_pt_nodata(height_tmp,base,bound);
+        next_seg->split = 1;
         split_segments[i] = next_seg;
         next_seg->CASBuild();
         // Acquire(next_seg);
@@ -1001,20 +1009,20 @@ bool skiplist::SplitSegment(Segment_pt *root,State* proc_state,skiplist* list,un
 
     for(int i=0;i<seg_size;i++){
         st = segment_stIndex[i];
-        unsigned int stop = 0;// interval left value of one segment
-        unsigned int start_local = 0;//interval right value of one segment
-        if(st == 0){
-            start_local = _start;//the parent's interval left
-        }else{
-            start_local = _keys[st];
-        }
+        unsigned int stop = split_segments[i]->bound;// interval left value of one segment
+        unsigned int start_local = split_segments[i]->anchor;//interval right value of one segment
+        // if(st == 0){
+        //     start_local = _start;//the parent's interval left
+        // }else{
+        //     start_local = _keys[st];
+        // }
         if(i == seg_size-1){
             ed = _size;
-            stop = _stop;//the parent's interval right
+            // stop = _stop;//the parent's interval right
         }
         else{
             ed = segment_stIndex[i+1];
-            stop = _keys[ed];//the interval right value is the interval left value of the next segment
+            // stop = _keys[ed];//the interval right value is the interval left value of the next segment
         }
 #if WRITESEG
         string kk = to_string(ed-st)+",";
@@ -1038,7 +1046,7 @@ bool skiplist::SplitSegment(Segment_pt *root,State* proc_state,skiplist* list,un
             else
                 new_subtree = rebuild_tree(_keys+st,_values+st,ed-st,start_local,stop);//,true,seg[i]->slope,seg[i]->intercept);
         }
-        split_segments[i]->anchor = start_local;
+        // split_segments[i]->anchor = start_local;
         split_segments[i]->DataArray = new_subtree;
     }
     for(int i = 1;i<seg_size;i++){
@@ -1439,6 +1447,7 @@ std::pair<long double,int> skiplist::scan_and_destroy_subtree(subtree* _root,uns
 void skiplist::insert_subtree(Segment_pt* root,unsigned int key,int value,subtree* path[],int &path_size){
     int insert_to_data = 0;
     subtree* n = root->DataArray;
+    // cerr<<"?";
     while(1){
         path[path_size] = n;
         path_size++;
@@ -1499,6 +1508,7 @@ void skiplist::insert_subtree(Segment_pt* root,unsigned int key,int value,subtre
             n = n->items[pos].comp.child;
         }
     }
+    // cerr<<"!"<<endl;
     for(int i = 0;i<path_size;i++){
         path[i]->num_insert_to_data += insert_to_data;
     }
@@ -1672,6 +1682,8 @@ void skiplist::UnlockUntil(Segment_pt* from[],int from_level,int to_level){
 std::pair<int,int> skiplist::Lookup(State* proc_state){
     Segment_pt* locate = Scan(proc_state);
     if(locate == nullptr){
+        string kk = to_string(proc_state->key)+"\tnullptr\t0"+"\n";
+        write_into_file("./nofind.txt",kk.c_str());
         return {0,0};
     }
     // if(proc_state->currs[0]->anchor > proc_state->key || proc_state->currs[0]->DataArray->stop >= proc_state->key ){
@@ -1679,8 +1691,12 @@ std::pair<int,int> skiplist::Lookup(State* proc_state){
     // }
     std::pair<int,node*> res = find_subtree(locate->DataArray,proc_state->key);
     if(res.first){
+        // string kk = to_string(proc_state->key)+"\t"+to_string(locate->split)+"\t1\n";
+        // write_into_file("./nofind.txt",kk.c_str());
         return {res.first,res.second->value};
     }else{
+        string kk = to_string(proc_state->key)+"\t"+to_string(locate->split)+"\t0\n";
+        write_into_file("./nofind.txt",kk.c_str());
         return {0,0};
     }
 }

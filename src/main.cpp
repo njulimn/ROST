@@ -3,13 +3,13 @@
 #include <thread>
 
 #define MM 1000000
-#define NUMBERDATA (1000000)
-#define PREINSERT 0//1*MM//(4*MM)
+#define NUMBERDATA (4*MM)
+#define PREINSERT 2*MM//1*MM//(4*MM)
 #define SkiplistMaxLevel 8//(int)(log(NUMBERDATA)/log(2))
 #define THREAD_NUMBER 2
 #define NOFINDDEBUG 0
 
-int key_dis = NUMBERDATA/THREAD_NUMBER;
+int key_dis = (NUMBERDATA-PREINSERT)/THREAD_NUMBER;
 // unsigned int dataq0[] = {1,2,3,4,5,6,7,8,9,10,11,12};
 unsigned int *dataq0 = new unsigned int[NUMBERDATA];
 skiplist *list = new skiplist(SkiplistMaxLevel,Gm);
@@ -18,22 +18,22 @@ using namespace chrono;
 
 void GetData2(){
     //ycsb64M
-    // char unique_dadta_file[] = "/home/yhzhou/datasets/unique_iot_web_unique_shuffle.csv";//unique_iot_web_unique_shuffle
+    char unique_dadta_file[] = "/mnt/e/skiplistExp/unique_iot_web_unique.csv";//unique_iot_web_unique_shuffle
     //unique_iot_web_unique
     // vector<unsigned int> dataq0(26900528);
     // long long length = 0;
     /*数据集*/
-    // ifstream fp(unique_dadta_file);
-    // string line;
-    // for(int i =0;i<NUMBERDATA;i++){
-    //     getline(fp,line);
-    //     dataq0[i] = atoi(line.c_str());
-    //     // cerr<<"key["<<i<<"]"<<dataq0[i]<<endl;    
-    // }
-    // fp.close();
-    for(int i = 0;i<NUMBERDATA;i++){
-        dataq0[i] = i+1;
+    ifstream fp(unique_dadta_file);
+    string line;
+    for(int i =0;i<NUMBERDATA;i++){
+        getline(fp,line);
+        dataq0[i] = atoi(line.c_str());
+        // cerr<<"key["<<i<<"]"<<dataq0[i]<<endl;    
     }
+    fp.close();
+    // for(int i = 0;i<NUMBERDATA;i++){
+    //     dataq0[i] = i+1;
+    // }
     std::random_device rd;
     std::mt19937 g(rd());
     std::shuffle(dataq0, dataq0+NUMBERDATA, g);
@@ -99,7 +99,7 @@ void test(const int id,const int bound_l,const int bound_r ){
         // cerr<<i<<endl;
         mystate.key = dataq0[i];
         mystate.value = i;
-        // cout<<i<<endl;
+        cout<<i<<endl;
         list->Insert(&mystate);
     }
     // free(mystate.ppreds);
@@ -131,12 +131,13 @@ int main(){
     for(int i = 0;i<PREINSERT;i++){
         mystate.key = dataq0[i];
         mystate.value = i;
-        cerr<<i<<endl;
+        // cerr<<i<<endl;
         list->Insert(&mystate);
     }
     cerr<<"preinsert finish"<<endl;
     int kk = PREINSERT;
     for(int idx=0; idx < THREAD_NUMBER; idx++){
+        cerr<<kk<<","<<kk+key_dis<<endl;
         threads.push_back(thread(test, idx,kk,kk+key_dis));
         kk+=key_dis;
     } 
@@ -150,9 +151,12 @@ int main(){
     for(int i =0;i<NUMBERDATA;i++){
         mystate.key = dataq0[i];
         std::pair<int,int> res = list->Lookup(&mystate);
-        if(!res.first || res.second != i){
-            cerr<<dataq0[i]<<" "<<i<<endl;
-        }
+        // if(!res.first || res.second != i){
+        //     // cerr<<dataq0[i];
+        //     // string kk = to_string(dataq0[i])+"\n";
+        //     // write_into_file("./nofind.txt",kk.c_str());
+            
+        // }
     }
     // free(mystate.ppreds);
     free(mystate.preds);
