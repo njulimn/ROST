@@ -3,10 +3,10 @@
 #include <thread>
 
 #define MM 1000000
-#define NUMBERDATA (4*MM)
-#define PREINSERT 2*MM//1*MM//(4*MM)
+#define NUMBERDATA (32*MM)
+#define PREINSERT 8*MM//1*MM//(4*MM)
 #define SkiplistMaxLevel 8//(int)(log(NUMBERDATA)/log(2))
-#define THREAD_NUMBER 2
+#define THREAD_NUMBER 8
 #define NOFINDDEBUG 0
 
 int key_dis = (NUMBERDATA-PREINSERT)/THREAD_NUMBER;
@@ -18,7 +18,7 @@ using namespace chrono;
 
 void GetData2(){
     //ycsb64M
-    char unique_dadta_file[] = "/mnt/e/skiplistExp/unique_iot_web_unique.csv";//unique_iot_web_unique_shuffle
+    char unique_dadta_file[] = "/home/yhzhou/datasets/ycsb64M.csv";//unique_iot_web_unique_shuffle
     //unique_iot_web_unique
     // vector<unsigned int> dataq0(26900528);
     // long long length = 0;
@@ -34,55 +34,10 @@ void GetData2(){
     // for(int i = 0;i<NUMBERDATA;i++){
     //     dataq0[i] = i+1;
     // }
-    std::random_device rd;
-    std::mt19937 g(rd());
-    std::shuffle(dataq0, dataq0+NUMBERDATA, g);
+    // std::random_device rd;
+    // std::mt19937 g(rd());
+    // std::shuffle(dataq0, dataq0+NUMBERDATA, g);
 }
-
-// void ExpSearch(){
-//     clock_t start,end;
-//     double sumTime = 0;
-// #if NOFINDDEBUG
-//     int nofindcnt = 0;
-// #endif
-//     start = clock();
-//     for (int i = 0; i < NUMBERDATA; i++) {
-//         if(dataq0[i] == UNINT_MAX || dataq0[i] == 0){
-//             continue;
-//         }
-//         // std::pair<int,int> res = list->Lookup(dataq0[i]);  
-// #if NOFINDDEBUG
-//         if(!res.first || (res.second)->key != dataq0[i]){
-//             cerr<<"not find "<<dataq0[i]<<" "<<i<<endl;
-//             nofindcnt++;
-//         }
-//
-// #endif
-//     }
-//     end = clock();
-//     sumTime =(double(end-start)/CLOCKS_PER_SEC);
-// #if NOFINDDEBUG
-//     cerr<<"no find cnt:"<<nofindcnt<<endl;
-// #endif
-//     cerr<<"Search time = "<<sumTime<<"s"<<endl;  //输出时间（单位：ｓ）
-// }
-
-// void ExpInsert(){
-//     clock_t start,end;
-//     double sumTime = 0;
-//     // int indx = 0;
-//     start = clock();
-//     for(int i = 0;i<NUMBERDATA;i++){
-//         if(dataq0[i] == UNINT_MAX || dataq0[i] == 0){
-//             continue;
-//         }
-//         list->Insert(dataq0[i],i);
-//     }
-//     end = clock();
-//     sumTime =(double(end-start)/CLOCKS_PER_SEC);
-//     cerr<<"Insert time = "<<sumTime<<"s"<<endl;  //输出时间（单位：ｓ）
-//     // list->show();
-// }
 
 void test(const int id,const int bound_l,const int bound_r ){
     // cerr<<bound_r<<endl;
@@ -99,7 +54,7 @@ void test(const int id,const int bound_l,const int bound_r ){
         // cerr<<i<<endl;
         mystate.key = dataq0[i];
         mystate.value = i;
-        cout<<i<<endl;
+        // cout<<i<<endl;
         list->Insert(&mystate);
     }
     // free(mystate.ppreds);
@@ -148,16 +103,20 @@ int main(){
     const auto end_time = std::chrono::steady_clock::now();
     const auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
     std::cout << "insert time: " << duration.count() << "us"<<std::endl;
+    const auto start_time2 = std::chrono::steady_clock::now();
     for(int i =0;i<NUMBERDATA;i++){
         mystate.key = dataq0[i];
         std::pair<int,int> res = list->Lookup(&mystate);
-        // if(!res.first || res.second != i){
-        //     // cerr<<dataq0[i];
-        //     // string kk = to_string(dataq0[i])+"\n";
-        //     // write_into_file("./nofind.txt",kk.c_str());
+        if(!res.first || res.second != i){
+            // cerr<<dataq0[i];
+            string kk = to_string(dataq0[i])+"\n";
+            write_into_file("./nofind.txt",kk.c_str());
             
-        // }
+        }
     }
+    const auto end_time2 = std::chrono::steady_clock::now();
+    const auto duration2 = std::chrono::duration_cast<std::chrono::microseconds>(end_time2 - start_time2);
+    std::cout << "insert time: " << duration2.count() << "us"<<std::endl;
     // free(mystate.ppreds);
     free(mystate.preds);
     // free(mystate.currs);
