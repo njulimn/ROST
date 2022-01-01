@@ -1,12 +1,12 @@
-#include "../include/skiplist.hpp"
+#include "skiplist.hpp"
 #include <iostream>
 #include <thread>
 
 #define MM 1000000
-#define NUMBERDATA (1*MM)
-#define PREINSERT 0//(4*MM)
+#define NUMBERDATA (1000000)
+#define PREINSERT 0//1*MM//(4*MM)
 #define SkiplistMaxLevel 8//(int)(log(NUMBERDATA)/log(2))
-#define THREAD_NUMBER 4
+#define THREAD_NUMBER 2
 #define NOFINDDEBUG 0
 
 int key_dis = NUMBERDATA/THREAD_NUMBER;
@@ -87,13 +87,13 @@ void GetData2(){
 void test(const int id,const int bound_l,const int bound_r ){
     // cerr<<bound_r<<endl;
     skiplist::State mystate;
-    mystate.ppreds = (skiplist::Segment_pt**)malloc(sizeof(skiplist::Segment_pt*)*SkiplistMaxLevel);
+    // mystate.ppreds = (skiplist::Segment_pt**)malloc(sizeof(skiplist::Segment_pt*)*SkiplistMaxLevel);
     mystate.preds = (skiplist::Segment_pt**)malloc(sizeof(skiplist::Segment_pt*)*SkiplistMaxLevel);
-    mystate.currs = (skiplist::Segment_pt**)malloc(sizeof(skiplist::Segment_pt*)*SkiplistMaxLevel);
+    // mystate.currs = (skiplist::Segment_pt**)malloc(sizeof(skiplist::Segment_pt*)*SkiplistMaxLevel);
     mystate.succs = (skiplist::Segment_pt**)malloc(sizeof(skiplist::Segment_pt*)*SkiplistMaxLevel);
-    memset(mystate.ppreds,0,sizeof(skiplist::Segment_pt*)*SkiplistMaxLevel);
+    // memset(mystate.ppreds,0,sizeof(skiplist::Segment_pt*)*SkiplistMaxLevel);
     memset(mystate.preds,0,sizeof(skiplist::Segment_pt*)*SkiplistMaxLevel);
-    memset(mystate.currs,0,sizeof(skiplist::Segment_pt*)*SkiplistMaxLevel);
+    // memset(mystate.currs,0,sizeof(skiplist::Segment_pt*)*SkiplistMaxLevel);
     memset(mystate.succs,0,sizeof(skiplist::Segment_pt*)*SkiplistMaxLevel);
     for(int i = bound_l;i<bound_r;i++){
         // cerr<<i<<endl;
@@ -102,22 +102,22 @@ void test(const int id,const int bound_l,const int bound_r ){
         // cout<<i<<endl;
         list->Insert(&mystate);
     }
-    free(mystate.ppreds);
+    // free(mystate.ppreds);
     free(mystate.preds);
-    free(mystate.currs);
+    // free(mystate.currs);
     free(mystate.succs);
 }
 
 int main(){
     GetData2();
     skiplist::State mystate;
-    mystate.ppreds = (skiplist::Segment_pt**)malloc(sizeof(skiplist::Segment_pt*)*SkiplistMaxLevel);
+    // mystate.ppreds = (skiplist::Segment_pt**)malloc(sizeof(skiplist::Segment_pt*)*SkiplistMaxLevel);
     mystate.preds = (skiplist::Segment_pt**)malloc(sizeof(skiplist::Segment_pt*)*SkiplistMaxLevel);
-    mystate.currs = (skiplist::Segment_pt**)malloc(sizeof(skiplist::Segment_pt*)*SkiplistMaxLevel);
+    // mystate.currs = (skiplist::Segment_pt**)malloc(sizeof(skiplist::Segment_pt*)*SkiplistMaxLevel);
     mystate.succs = (skiplist::Segment_pt**)malloc(sizeof(skiplist::Segment_pt*)*SkiplistMaxLevel);
-    memset(mystate.ppreds,0,sizeof(skiplist::Segment_pt*)*SkiplistMaxLevel);
+    // memset(mystate.ppreds,0,sizeof(skiplist::Segment_pt*)*SkiplistMaxLevel);
     memset(mystate.preds,0,sizeof(skiplist::Segment_pt*)*SkiplistMaxLevel);
-    memset(mystate.currs,0,sizeof(skiplist::Segment_pt*)*SkiplistMaxLevel);
+    // memset(mystate.currs,0,sizeof(skiplist::Segment_pt*)*SkiplistMaxLevel);
     memset(mystate.succs,0,sizeof(skiplist::Segment_pt*)*SkiplistMaxLevel);
     srand((int)time(0));
     cerr<<NUMBERDATA<<endl;
@@ -131,6 +131,7 @@ int main(){
     for(int i = 0;i<PREINSERT;i++){
         mystate.key = dataq0[i];
         mystate.value = i;
+        cerr<<i<<endl;
         list->Insert(&mystate);
     }
     cerr<<"preinsert finish"<<endl;
@@ -153,9 +154,9 @@ int main(){
             cerr<<dataq0[i]<<" "<<i<<endl;
         }
     }
-    free(mystate.ppreds);
+    // free(mystate.ppreds);
     free(mystate.preds);
-    free(mystate.currs);
+    // free(mystate.currs);
     free(mystate.succs);
     // list->showList();
 }
