@@ -32,7 +32,7 @@ typedef uint8_t bitmap_t;
 #define p 0.5
 #define UNINT_MAX 0xffffffff
 #define Epslion 1e-8
-#define LINAERITY 1.0
+#define LINAERITY 0.98
 #define USEPLR 1
 #define USEGREEDYPCCS 0
 #define DEBUG 0
@@ -344,6 +344,8 @@ class skiplist {
         std::atomic<int> max_height_; 
         int MaxLevel;
 		int gamma;
+        int segment_max_size;
+        double linearity;
         struct subtree;
         struct Item{
             union {
@@ -635,8 +637,12 @@ class skiplist {
         
         std::pair<int,node*> find_subtree(subtree* n,unsigned int key){
             // subtree* n = this->DataArray;
+            vector<subtree*> paths;
+            vector<int> poss;
             while(1){
+                paths.push_back(n);
                 int pos = n->predict(key);
+                poss.push_back(pos);
                 if (BITMAP_GET(n->none_bitmap, pos) == 1) {
                     //checkTypeEqualNull
                     break;
@@ -739,11 +745,11 @@ class skiplist {
 
         /////////////////////////////////
         
-        // int segCnt;
+        std::atomic<int> segCnt;
         Segment_pt *head_;
         Segment_pt *tail_;
         skiplist();
-        skiplist(int MaxLevel,int gamma):max_height_(1),MaxLevel(MaxLevel),gamma(gamma){
+        skiplist(int MaxLevel,int gamma):max_height_(1),MaxLevel(MaxLevel),gamma(gamma),segment_max_size(1e5),linearity(0.98),segCnt(1){
             head_ = NewSegment_pt(MaxLevel,0,0);
             head_->DataArray->start = 0;
             head_->DataArray->stop = 0;
@@ -795,7 +801,11 @@ class skiplist {
             return max_height_.load(std::memory_order_relaxed);
         }
 
-        Segment_pt* Scan(State* proc_state);
+        inline int GetSegCnt() const{
+            return segCnt.load(std::memory_order_relaxed);
+        }
+
+        Segment_pt* Scan(State* proc_state,int from_level);
 
         // void FindStateForLevel(State* proc_state,int level);
 
@@ -809,7 +819,7 @@ class skiplist {
 
 		// bool Insert(unsigned int key,int value);
 
-        bool Insert(State* proc_state);
+        bool Insert(State* proc_state,int &lockcollision);
 
 		void insert_static(vector<Segment_pt*> &Update,Segment* seg,unsigned int st,unsigned int ed,node* input,int size,int level);
 
@@ -818,8 +828,10 @@ class skiplist {
         bool LockAndValidateUntil(Segment_pt* from[],Segment_pt* to[],int from_level,int to_level);
 
         void UnlockUntil(Segment_pt* from[],int level);
-
+        //release [from[from_level],from[to_level])
         void UnlockUntil(Segment_pt* from[],int from_level,int to_level);
+
+        bool RecomputeAndLock(Segment_pt* from[],Segment_pt* to[],int level_from,int level_to,unsigned int key);
 
 		void show();
 
@@ -882,6 +894,50 @@ class skiplist {
         }
 };
 
+bool skiplist::RecomputeAndLock(Segment_pt* from[],Segment_pt* to[],int level_from,int level_to,unsigned int key){
+    Segment_pt* pred = from[level_from];
+    // Segment_pt* ppred = nullptr;
+    Segment_pt* curr = nullptr;
+    Segment_pt* succ = nullptr;
+    for(int l = level_from;l>level_to;l--){
+        curr = pred->Next(l);
+        succ = pred->Next(l);
+        while(key >= succ->anchor){
+            // ppred = pred;
+            pred = curr;
+            curr = succ;
+            succ = succ->Next(l);
+        }
+        //key < succ->anchor
+        if(key >= curr->bound){
+            //key is after curr, before succ
+            if(!curr->CASLock()){
+                //false;
+                for(int j = l+1;j<=level_from;j++){
+                    from[l]->RealseLock();
+                }
+                return false;
+            }
+            // ppred = pred;
+            pred = curr;
+        }else{
+            succ = curr;
+            if(!pred->CASLock()){
+                //false;
+                for(int j = l+1;j<=level_from;j++){
+                    from[l]->RealseLock();
+                }
+                return false;
+            }
+        }
+        if(succ == nullptr){
+            succ = nullptr;
+        }
+        from[l] = pred;
+        to[l] = succ;
+    }
+    return true;
+}
 
 bool skiplist::SplitSegment(Segment_pt *root,State* proc_state,skiplist* list,unsigned int *_keys,int*  _values,int _size,long double pccs,int middle,unsigned int _start,unsigned int _stop){
     // cerr<<"split"<<endl;
@@ -891,6 +947,7 @@ bool skiplist::SplitSegment(Segment_pt *root,State* proc_state,skiplist* list,un
     vector<int> segment_stIndex;
     vector<int> height_seq;
     int max_height_cur = list->GetMaxHeight();
+    int segment_max_height = root->level;//the max height of split segment
     for (int i = 0; i < _size; i++) {
 		Segment* seg_res = nullptr;
 		seg_res = plr->Process(static_cast<double>(_keys[i])-static_cast<double>(_keys[st]), static_cast<double>(i-st));
@@ -899,7 +956,7 @@ bool skiplist::SplitSegment(Segment_pt *root,State* proc_state,skiplist* list,un
             seg.push_back(seg_res);
             if(st != 0){
                 int h = RandLevel();
-                max_height_cur = max(max_height_cur,h);
+                segment_max_height = max(segment_max_height,h);
                 height_seq.push_back(h);
             }
             st = ed = i;
@@ -916,101 +973,96 @@ bool skiplist::SplitSegment(Segment_pt *root,State* proc_state,skiplist* list,un
         if(st != 0){
             int h = RandLevel();
             height_seq.push_back(h);
-            max_height_cur = max(max_height_cur,h);
+            segment_max_height = max(segment_max_height,h);
         }
 	}
+    max_height_cur = max(max_height_cur,segment_max_height);
     int seg_size = static_cast<int>(seg.size());
+    int to_level = root->level;
+    //scan & lock
     if(seg_size > 1){
-        bool result = LockAndValidateUntil(proc_state->preds,proc_state->succs,root->level,max_height_cur);//root->level-1,
-        if(!result){
-            //memory release
-            return false;
+        //scan
+        Segment_pt* pre_ = nullptr;
+        int from_level = segment_max_height-1;
+        if(proc_state->preds[from_level]->bound <= proc_state->key){
+            from_level = max_height_cur-1;
+            //if from_level != segment_max_height-1
+            //then proc_state->preds[l]->Next(l) != proc_state->succs[l]
+        }
+        //Validate 
+        for(int l = from_level;l>=to_level;l--){
+            if(proc_state->preds[l]->Next(l) != proc_state->succs[l]){
+                //Recompute&Lock
+                if(!RecomputeAndLock(proc_state->preds,proc_state->succs,l,to_level-1,proc_state->key))
+                    return false;
+                cerr<<"RecomputeAndLock\n";
+                break;
+            }else{
+                if(pre_ != proc_state->preds[l] && !proc_state->preds[l]->CASLock()){
+                    for(int i = l+1;i<=from_level;i++){
+                        proc_state->preds[i]->RealseLock();
+                    }
+                    return false;
+                }
+                pre_ = proc_state->preds[l];
+            }
+        }
+        for(int l = to_level-1;l>=0;l--){
+            proc_state->preds[l] = root;
+            proc_state->succs[l] = root->Next(l);
         }
     }
-    //如果需要split，但是acquire失败，则进行rebuild
     // cerr<<"seg size:"<<seg.size()<<endl;
 #if WRITESEG
     string kk = "\nseg size "+to_string(seg.size())+":\n";
     write_into_file("./split.txt",kk.c_str());
 #endif
+    // if(!root->CASBuild()){
+    //         return false;
+    // }
     vector<Segment_pt*> split_segments(seg_size);
-    split_segments[0] = root;
+    vector<Segment_pt*> split_inner_pred(max_height_cur,nullptr);//[1,seg_size)
+    vector<Segment_pt*> split_left(max_height_cur,nullptr);//[1,seg_size)
+    vector<Segment_pt*> split_right(max_height_cur,nullptr);//[1,seg_size)
     int max_seg_height = root->level;
     Segment_pt** preds = (Segment_pt**)(malloc(sizeof(Segment_pt*)*MaxLevel));
     memcpy(preds,proc_state->preds,sizeof(Segment_pt*)*MaxLevel);
     root->split = 1;
-    for(int i = 1;i<seg_size;i++){
-        int height_tmp = height_seq[i-1];//RandLevel();
-        unsigned int base = _keys[segment_stIndex[i]];
-        unsigned int bound;
-         if(i==1){
-            root->bound = base;
-        }
-        if(i == seg_size-1){//last segment
-            bound = _stop;
+    split_segments[0] = root;
+    subtree *rootDataArray = nullptr;
+    for(int i = 0;i<seg_size;i++){
+        int height_tmp,ed,st=segment_stIndex[i];
+        unsigned int base,bound;
+        if(i == 0){
+            height_tmp = max_seg_height;
+            base = _start;
         }else{
-            bound = _keys[segment_stIndex[i+1]];
+            height_tmp = height_seq[i-1];
+            base  = _keys[st];
         }
-        Segment_pt* next_seg = NewSegment_pt_nodata(height_tmp,base,bound);
-        next_seg->split = 1;
-        split_segments[i] = next_seg;
-        next_seg->CASBuild();
-        // Acquire(next_seg);
-        assert(next_seg->CASLock());
-        max_seg_height = max(max_seg_height,height_tmp);
-        for(int l = height_tmp-1;l>=0;l--){
-            next_seg->NoBarrier_SetNext(l,preds[l]->NoBarrier_Next(l));
-            preds[l]->NoBarrier_SetNext(l,next_seg);
-            preds[l] = next_seg;
-        }
-
-    }
-    
-    // for(int i = 0;i<seg_size;i++){
-    //     cerr<<split_segments[i]<<endl;
-    //     for(int j = 0;j<split_segments[i]->level;j++){
-    //         cerr<<"level "<<j<<"next:"<<split_segments[i]->NoBarrier_Next(j)<<endl;
-    //     }
-    // }
-
-    int max_height = list->max_height_.load(std::memory_order_relaxed);
-    while (max_seg_height > max_height) {
-        if (list->max_height_.compare_exchange_weak(max_height, max_seg_height)) {
-            // successfully updated it
-            max_height = max_seg_height;
-            break;
-        }
-        // else retry, possibly exiting the loop because somebody else
-        // increased it
-    }
-
-    for(int i=0;i<seg_size;i++){
-        st = segment_stIndex[i];
-        unsigned int stop = split_segments[i]->bound;// interval left value of one segment
-        unsigned int start_local = split_segments[i]->anchor;//interval right value of one segment
-        // if(st == 0){
-        //     start_local = _start;//the parent's interval left
-        // }else{
-        //     start_local = _keys[st];
-        // }
         if(i == seg_size-1){
+            bound = _stop;
             ed = _size;
-            // stop = _stop;//the parent's interval right
-        }
-        else{
+        }else{
             ed = segment_stIndex[i+1];
-            // stop = _keys[ed];//the interval right value is the interval left value of the next segment
+            bound = _keys[ed];
         }
-#if WRITESEG
-        string kk = to_string(ed-st)+",";
-        write_into_file("./split.txt",kk.c_str());
-#endif
+        Segment_pt* next_seg = nullptr;
+        if(i){
+            next_seg = NewSegment_pt_nodata(height_tmp,base,bound);
+            next_seg->split = 1;
+            split_segments[i] = next_seg;
+            // next_seg->CASBuild();
+            // Acquire(next_seg);
+            RT_ASSERT(next_seg->CASLock());
+        }
+        max_seg_height = max(max_seg_height,height_tmp);
         RT_ASSERT(ed-st>0);
         subtree* new_subtree = nullptr;
         if(ed-st == 1){
             new_subtree = build_tree_none();
-            new_subtree->start = start_local;
-            new_subtree->stop = stop;
+            new_subtree->start = base;
+            new_subtree->stop = bound;
             BITMAP_CLEAR(new_subtree->none_bitmap,0);
             new_subtree->size++;
             new_subtree->num_inserts++;
@@ -1019,20 +1071,99 @@ bool skiplist::SplitSegment(Segment_pt *root,State* proc_state,skiplist* list,un
         }
         else{
             if(seg[i]->slope > 0)
-                new_subtree = rebuild_tree(_keys+st,_values+st,ed-st,start_local,stop,true,seg[i]->slope,seg[i]->intercept);
+                new_subtree = rebuild_tree(_keys+st,_values+st,ed-st,base,bound,true,seg[i]->slope,seg[i]->intercept);
             else
-                new_subtree = rebuild_tree(_keys+st,_values+st,ed-st,start_local,stop);//,true,seg[i]->slope,seg[i]->intercept);
+                new_subtree = rebuild_tree(_keys+st,_values+st,ed-st,base,bound);//,true,seg[i]->slope,seg[i]->intercept);
         }
-        // split_segments[i]->anchor = start_local;
-        split_segments[i]->DataArray = new_subtree;
+        if(i){
+            //inner link
+            split_segments[i]->DataArray = new_subtree;
+            for(int l = height_tmp-1;l>=0;l--){
+                next_seg->NoBarrier_SetNext(l,nullptr);
+                if(split_inner_pred[l]){
+                    split_inner_pred[l]->SetNext(l,next_seg);
+                    split_inner_pred[l] = next_seg;
+                }else{
+                    split_inner_pred[l] = next_seg;
+                    split_left[l] = next_seg;
+                }
+                split_right[l] = next_seg;
+            }
+        }else{
+            rootDataArray = new_subtree;
+        }
+        
     }
+    // cerr<<"after link inner"<<endl;
+    // for(int i = 1;i<seg_size;i++){
+    //     cerr<<"segment "<<split_segments[i]<<"["<<split_segments[i]->anchor
+    //         <<","<<split_segments[i]->bound<<")"<<endl;
+    //     for(int j = 0;j<split_segments[i]->level;j++){
+    //         cerr<<j<<"->"<<split_segments[i]->Next(j)<<endl;
+    //     }
+    //     cerr<<endl;
+    // }
+
+    int max_height = list->max_height_.load(std::memory_order_relaxed);
+    while (segment_max_height > max_height) {
+        if (list->max_height_.compare_exchange_weak(max_height, max_seg_height)) {
+            // successfully updated it
+            max_height = segment_max_height;
+            break;
+        }
+    }
+    // cerr<<endl;
+    // cerr<<"before link out,preds next"<<endl;
+    // for(int l = 0;l<segment_max_height;l++){
+    //     cerr<<"level "<<l<<"\tpre:"<<proc_state->preds[l]<<"["<<proc_state->preds[l]->anchor
+    //         <<","<<proc_state->preds[l]->bound<<")"<<"\tsucc:"<<proc_state->succs[l];
+    //     if(proc_state->succs[l])
+    //         cerr<<"["<<proc_state->succs[l]->anchor<<","<<proc_state->succs[l]->bound<<")";
+    //     cerr<<endl;
+    // }
+
+    int raw_segcnt = list->GetSegCnt();
+    for(int l = 0;l<segment_max_height;l++){
+        if(split_right[l]){
+            split_right[l]->NoBarrier_SetNext(l,proc_state->succs[l]);
+        }
+        if(split_left[l]){
+            proc_state->preds[l]->NoBarrier_SetNext(l,split_left[l]);
+        }
+        if(l == to_level-1){
+            root->bound = rootDataArray->stop;
+            root->DataArray = rootDataArray;
+        }
+    }
+    if(seg_size>1){
+        while(!(list->segCnt.compare_exchange_strong(raw_segcnt, raw_segcnt+seg_size-1))) {
+            // successfully updated it
+            raw_segcnt = list->GetSegCnt();
+        }
+    }    
+    // cerr<<endl;
+    // cerr<<"after link out,preds next"<<endl;
+    // for(int l = segment_max_height-1;l>=0;l--){
+    //     cerr<<"level:"<<l<<" segment "<<proc_state->preds[l]<<"["<<proc_state->preds[l]->anchor
+    //         <<","<<proc_state->preds[l]->bound<<")"<<"->"<<proc_state->preds[l]->Next(l)<<endl;
+    // }
+    // cerr<<endl;
+    // cerr<<"split next"<<endl;
+    // for(int i = 0;i<seg_size;i++){
+    //     cerr<<"segment "<<split_segments[i]<<endl;
+    //     for(int j = 0;j<split_segments[i]->level;j++){
+    //         cerr<<j<<"->"<<split_segments[i]->Next(j)<<endl;
+    //     }
+    //     cerr<<endl;
+    // }
+
     for(int i = 1;i<seg_size;i++){
-        // Release(split_segments[i]);
-        split_segments[i]->RealseBuild();
+        // split_segments[i]->RealseBuild();
         split_segments[i]->RealseLock();
     }
-    UnlockUntil(proc_state->preds,max_height_cur);
-    // cerr<<"split end"<<endl;
+    UnlockUntil(proc_state->preds,to_level,max_height_cur);
+    // cerr<<"split end\n";
+    // cerr<<seg_size<<endl;
     return true;
 }
 
@@ -1456,41 +1587,33 @@ void skiplist::insert_subtree(Segment_pt* root,unsigned int key,int value,subtre
 //     return;
 // }
 
-skiplist::Segment_pt* skiplist::Scan(skiplist::State* proc_state){
+skiplist::Segment_pt* skiplist::Scan(skiplist::State* proc_state,int from_level){
     Segment_pt* ppred = nullptr;
-    Segment_pt* pred = head_;
+    Segment_pt* pred = proc_state->preds[from_level-1];
     Segment_pt* curr = nullptr;
     Segment_pt* succ = nullptr;
     Segment_pt* locate = nullptr;
-    int max_height = max_height_.load(memory_order_relaxed);
-    for(int l = MaxLevel-1;l>=max_height;l--){
-        proc_state->preds[l] = head_;
-        proc_state->succs[l] = tail_;
-    }
-    for(int l = max_height-1;l>=0;l--){
+    for(int l = from_level-1;l>=0;l--){
         //not sure key > curr's anchor
-        if(pred->ReadBuildM() == true){
-            return nullptr;
-        }
-        curr = pred->Next(l);
-        // if(curr == nullptr && pred == tail_){
-        //     cerr<<"pred = tail curr = null\n";
-        //     cerr<<"level "<<l<<endl;
-        //     cerr<<"ppred ["<<ppred->anchor<<ppred->bound<<")\n";
-        //     cerr<<"key = "<<proc_state->key<<endl;
+        // if(pred->ReadBuildM() == true){
+        //     return nullptr;
         // }
+        // if(pred->Next(l) == nullptr){
+        //     curr = nullptr;
+        // }
+        curr = pred->Next(l);
         RT_ASSERT(curr!=nullptr);
-        if(curr->ReadBuildM() == true){
-            return nullptr;
-        }
+        // if(curr->ReadBuildM() == true){
+        //     return nullptr;
+        // }
         succ = curr->Next(l);   
         while(succ && succ->anchor <= proc_state->key){
             ppred = pred;
             pred = curr;
             curr = succ;
-            if(succ->ReadBuildM() == true){
-                return nullptr;
-            }
+            // if(succ->ReadBuildM() == true){
+            //     return nullptr;
+            // }
             succ = succ->Next(l);
         }
         
@@ -1503,21 +1626,23 @@ skiplist::Segment_pt* skiplist::Scan(skiplist::State* proc_state){
             if(!locate && proc_state->key >= curr->anchor){
                 //key is located in curr
                 locate = curr;
-                for(;l>=0;l--){
-                    proc_state->preds[l] = curr;
-                    if(curr->ReadBuildM() == true){
-                        return nullptr;
-                    }
-                    proc_state->succs[l] = curr->Next(l);
-                }
+                proc_state->preds[l] = curr;
+                proc_state->succs[l] = curr->Next(l);
+                // for(;l>=0;l--){
+                //     proc_state->preds[l] = curr;
+                //     // if(curr->ReadBuildM() == true){
+                //     //     return nullptr;
+                //     // }
+                //     proc_state->succs[l] = curr->Next(l);
+                // }
                 return locate;
             }
             //key is rebore curr
             succ = curr;
         }
-        if(pred->ReadBuildM() == true){
-            return nullptr;
-        }
+        // if(pred->ReadBuildM() == true){
+        //     return nullptr;
+        // }
         if(pred->NoBarrier_Next(l) != succ){
             return nullptr;
         }
@@ -1606,11 +1731,30 @@ void skiplist::UnlockUntil(Segment_pt* from[],int from_level,int to_level){
 }
 
 std::pair<int,int> skiplist::Lookup(State* proc_state){
-    Segment_pt* locate = Scan(proc_state);
+    int max_height = max_height_.load(memory_order_relaxed);
+    if(max_height == MaxLevel){
+        proc_state->preds[MaxLevel-1] = head_;
+        proc_state->succs[MaxLevel-1] = tail_;
+    }else{
+        for(int l = MaxLevel-1;l>=max_height;l--){
+            proc_state->preds[l] = head_;
+            proc_state->succs[l] = tail_;
+        }
+    }
+    
+    Segment_pt* locate = Scan(proc_state,MaxLevel);
     if(locate == nullptr){
-        // string kk = to_string(proc_state->key)+"\tnullptr\t0"+"\n";
-        // write_into_file("./nofind.txt",kk.c_str());
+        string kk = to_string(proc_state->key)+"\tnullptr\t0"+"\n";
+        write_into_file("./nofind.txt",kk.c_str());
         return {0,0};
+    }else if(locate->ReadBuildM()){
+        string kk = to_string(proc_state->key)+"\tbuild lock\t0"+"\n";
+        write_into_file("./nofind.txt",kk.c_str());
+        return {0,1};//R-W conflicts
+    }else if(locate->ReadLock() == false){
+        string kk = to_string(proc_state->key)+"\t segment lock\t0"+"\n";
+        write_into_file("./nofind.txt",kk.c_str());
+        return {0,1};//R-W conflicts
     }
     // if(proc_state->currs[0]->anchor > proc_state->key || proc_state->currs[0]->DataArray->stop >= proc_state->key ){
     //     return {0,0};
@@ -1621,19 +1765,32 @@ std::pair<int,int> skiplist::Lookup(State* proc_state){
         // write_into_file("./nofind.txt",kk.c_str());
         return {res.first,res.second->value};
     }else{
-        // string kk = to_string(proc_state->key)+"\t"+to_string(locate->split)+"\t0\n";
-        // write_into_file("./nofind.txt",kk.c_str());
+        string kk = to_string(proc_state->key)+"\t"+to_string(locate->split)+"\t0\n";
+        write_into_file("./nofind.txt",kk.c_str());
         return {0,0};
     }
 }
 
-bool skiplist::Insert(State* proc_state){
+bool skiplist::Insert(State* proc_state,int &lockcollision){   
     while(true){
-        Segment_pt* locate = Scan(proc_state);
-        if(locate == head_ || locate == tail_ || !locate  || locate->ReadBuildM() == true){
-            for(int i = 0;i<10000;i++);
+        int max_height = max_height_.load(memory_order_relaxed);
+        if(MaxLevel == max_height){
+            proc_state->preds[MaxLevel-1] = head_;
+        }
+        else{
+            for(int l = MaxLevel-1;l>=max_height;l--){
+                proc_state->preds[l] = head_;
+                proc_state->succs[l] = tail_;
+            }
+        }
+        Segment_pt* locate = Scan(proc_state,MaxLevel);
+        if( !locate || locate == head_ || locate == tail_ ){// || locate->ReadBuildM() == true
+            // for(int i = 0;i<10000;i++);
             // if(locate)
             //     cerr<<locate->ReadBuildM()<<endl;
+            // from_level = MaxLevel;
+            // proc_state->preds[from_level-1] = head_;
+            lockcollision++;
             continue;
         }
         if(locate->CASLock()){
@@ -1642,10 +1799,13 @@ bool skiplist::Insert(State* proc_state){
             locate->RealseLock();
             // Release(proc_state->currs[0].lock);
             break;
-        }else{
-            // cerr<<"locate CASLOCK failed"<<endl;
-            for(int i = 0;i<10000;i++);
         }
+        lockcollision++;
+        // else{
+        //     from_level = locate->level;
+        //     proc_state->preds[from_level-1] = locate;
+        //     // for(int i = 0;i<10000;i++);
+        // }
     }
     return true;
 }
@@ -1672,8 +1832,8 @@ int skiplist::Add(State* proc_state,Segment_pt* locate){
         }
         std::pair<long double,int> res = scan_and_destroy_subtree(n,keys,values);
         scan_+=ESIZE;
-        // cerr<<"lin:"<<res.first<<"\t"<<ESIZE<<endl;
-        if((res.first < LINAERITY )|| ESIZE >1e6){//|| ESIZE > 1e6
+        // cerr<<res.first<<endl;
+        if((res.first < linearity )|| ESIZE >segment_max_size){//|| ESIZE > 1e6
             if(SplitSegment(locate,proc_state,this,keys,values,ESIZE,res.first,res.second,n_start,n_stop)){
                 locate->RealseBuild();
                 delete[] keys;
