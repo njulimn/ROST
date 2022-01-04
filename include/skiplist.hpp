@@ -1014,6 +1014,7 @@ bool skiplist::SplitSegment(Segment_pt *root,State* proc_state,skiplist* list,un
     memcpy(preds,proc_state->preds,sizeof(Segment_pt*)*MaxLevel);
     root->split = 1;
     split_segments[0] = root;
+    subtree *root_dataarray = nullptr;
     unsigned int split_lower_bound = 0;
     for(int i = 0;i<seg_size;i++){
         int height_tmp,ed,st=segment_stIndex[i];
@@ -1064,7 +1065,7 @@ bool skiplist::SplitSegment(Segment_pt *root,State* proc_state,skiplist* list,un
             //inner link
             split_segments[i]->DataArray = new_subtree;
             for(int l = height_tmp-1;l>=0;l--){
-                next_seg->NoBarrier_SetNext(l,nullptr);
+                next_seg->SetNext(l,nullptr);
                 if(split_inner_pred[l]){
                     split_inner_pred[l]->SetNext(l,next_seg);
                     split_inner_pred[l] = next_seg;
@@ -1075,13 +1076,14 @@ bool skiplist::SplitSegment(Segment_pt *root,State* proc_state,skiplist* list,un
                 split_right[l] = next_seg;
             }
         }else{
-            root->DataArray = new_subtree;
+            root_dataarray = new_subtree;
             split_lower_bound = bound;
         }
         
     }
 
     if(seg_size == 1){
+        root->DataArray = root_dataarray;
         root->ReleaseSplit();
         root->ReleaseLock();
         return true;
@@ -1112,6 +1114,7 @@ bool skiplist::SplitSegment(Segment_pt *root,State* proc_state,skiplist* list,un
                 }
             }
             root->bound = split_lower_bound;
+            root->DataArray = root_dataarray;
             root->ReleaseSplit();
             root->ReleaseLock();
             for(int i = to_level;i<max_seg_height;i++){
@@ -1562,7 +1565,6 @@ std::pair<long double,int> skiplist::scan_and_destroy_subtree(subtree* _root,uns
 void skiplist::insert_subtree(Segment_pt* root,unsigned int key,int value,subtree* path[],int &path_size){
     int insert_to_data = 0;
     subtree* n = root->DataArray;
-    string w_type;
     while(1){
         path[path_size] = n;
         path_size++;
@@ -1574,8 +1576,7 @@ void skiplist::insert_subtree(Segment_pt* root,unsigned int key,int value,subtre
                 n->items[pos].comp.data.key = key;
                 n->items[pos].comp.data.value = value;
                 n->size++;
-                n->num_inserts++;    
-                w_type = to_string(key)+"\t0";            
+                n->num_inserts++;               
                 break;
         } else if (BITMAP_GET(n->child_bitmap, pos) == 0) {
             //key冲突
@@ -1595,7 +1596,6 @@ void skiplist::insert_subtree(Segment_pt* root,unsigned int key,int value,subtre
                 memcpy(root->DataArray, newtree, sizeof(subtree));
                 path[0] = root->DataArray;
                 delete_subtree(newtree, 1);
-                w_type = to_string(key)+"\t1";
                 break;
             }
             std::pair<unsigned int,unsigned int>line = computeRange(pos,n);
@@ -1831,12 +1831,12 @@ std::pair<int,int> skiplist::Lookup(State* proc_state){
 bool skiplist::Insert(State* proc_state){   
     while(true){
         Segment_pt* locate = Scan(proc_state);
-        if( !locate || locate == head_ || locate == tail_ ){
-            continue;
-        }
-        if(! locate->ReadSplit()){
+        if(locate){
             if(locate->CASLock()){
-                // Acquire(proc_state->currs[0].lock);
+                if(locate->anchor > proc_state->key || locate->bound <= proc_state->key){
+                    locate->ReleaseLock();
+                    continue;
+                }
                 Add(proc_state,locate);
                 return true;
             }
