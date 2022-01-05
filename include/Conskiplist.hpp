@@ -376,6 +376,30 @@ class skiplist {
                 return std::min(this->num_items - 1, static_cast<int>(v));
             }
 
+            std::pair<int,node*> find_key_in_subtree(K key){
+                subtree* n = this;
+                // vector<subtree*> paths;
+                // vector<int> poss;
+                while(1){
+                    // paths.push_back(n);
+                    int pos = n->predict(key);
+                    // poss.push_back(pos);
+                    if (BITMAP_GET(n->none_bitmap, pos) == 1) {
+                        //checkTypeEqualNull
+                        break;
+                        // return {false,0};
+                    }
+                    else if(BITMAP_GET(n->child_bitmap, pos) == 0){
+                        //checkTypeEqualData
+                        return {n->items[pos].comp.data.key == key,&(n->items[pos].comp.data)};
+                    }
+                    else{
+                        n = n->items[pos].comp.child;
+                    }
+                }
+                return {false,0};
+            }
+
         };
         struct Segment_pt{
             K anchor;//left guard
@@ -439,6 +463,10 @@ class skiplist {
             
             void NoBarrier_SetNext(Segment_pt* x) {
                 next_.store(x, std::memory_order_relaxed);
+            }
+
+            std::pair<bool,V> Lookup(K key){
+                return DataArray->find_key_in_subtree(key);
             }
 
         };
@@ -554,31 +582,6 @@ class skiplist {
 
         void insert_subtree(Segment_pt* root,K key,V value,subtree* path[],int &path_size);
         
-        std::pair<int,node*> find_subtree(subtree* n,K key){
-            // subtree* n = this->DataArray;
-            vector<subtree*> paths;
-            vector<int> poss;
-            while(1){
-                paths.push_back(n);
-                int pos = n->predict(key);
-                poss.push_back(pos);
-                if (BITMAP_GET(n->none_bitmap, pos) == 1) {
-                    //checkTypeEqualNull
-                    break;
-                    // return {false,0};
-                }
-                else if(BITMAP_GET(n->child_bitmap, pos) == 0){
-                    //checkTypeEqualData
-                    return {n->items[pos].comp.data.key == key,&(n->items[pos].comp.data)};
-                }
-                else{
-                    jmp_subtree++;
-                    n = n->items[pos].comp.child;
-                }
-            }
-            return {false,0};
-        }
-
         inline int compute_gap_count(int size) {
             if (size >= 1000000) return 1;
             if (size >= 100000) return 2;
@@ -615,6 +618,7 @@ class skiplist {
 
         std::pair<long double,int> scan_and_destroy_subtree(subtree* root,K *keys,V *values, bool destory = true);
 
+        //data array = n
         Segment_pt* NewSegment_pt(K base,K bound,subtree* n){
             Segment_pt *newseg = new Segment_pt;
             newseg->anchor = base;
@@ -627,6 +631,7 @@ class skiplist {
             return newseg;
         }
 
+        //data array = nullptr
         Segment_pt* NewSegment_pt_nodata(K base,K bound){
             Segment_pt *newseg = new Segment_pt;
             newseg->anchor = base;
@@ -639,6 +644,7 @@ class skiplist {
             return newseg;
         }
         
+        //data array = build_tree_none
         Segment_pt* NewSegment_pt(K base,K bound){
             Segment_pt *newseg = new Segment_pt;
             newseg->anchor = base;
@@ -678,7 +684,6 @@ class skiplist {
         // Segment_pt *head_;
         // Segment_pt *tail_;
         skiplist();
-        //TODO:skiplist 构造函数
         skiplist(int MaxLevel,int gamma):max_height_(1),MaxLevel(MaxLevel),gamma(gamma),segment_max_size(1e5),linearity(0.98){
             head_ = NewIndex(MaxLevel,0,0);
             tail_ = NewIndex(MaxLevel,UNINT_MAX,UNINT_MAX);
@@ -708,18 +713,42 @@ class skiplist {
         inline int GetMaxHeight() const {
             return max_height_.load(std::memory_order_relaxed);
         }
-
+        
         //for Lookup
-        Segment_pt* Scan(K key);
+        Segment_pt* Scan(K key){
+            //TODO:
+        }
 
+        
         //for Add
-        Segment_pt* Scan(K key, Index** preds);
+        Segment_pt* Scan(K key, Index** preds){
+            //TODO:
+        }
 
         //skiplist lookup a key
-        std::pair<int,V> Lookup(K key);
+        std::pair<int,V> Lookup(K key){
+            Segment_pt* root = Scan(key);
+            return root->Lookup(key);
+        }
 
         //skiplist add a key 
-        void Add(K key,V value);
+        void Add(K key,V value){
+            //TODO:
+            /*
+            scan get segment_pt
+            while(true){
+                while(!locate->Acquirelock());
+                if(key is in locate){
+                    locate->Add()
+                    break;
+                }else{
+                    next = locate's next;
+                    locate->Release();
+                    locate = next;
+                }
+            }
+            */	
+        }
 
         int RandLevel(){
             int lvl = 1;
