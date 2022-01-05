@@ -41,45 +41,25 @@ void GetData2(){
 }
 
 void test(const int id,const int bound_l,const int bound_r ){
-    skiplist::State mystate;
-    mystate.preds = (skiplist::Segment_pt**)malloc(sizeof(skiplist::Segment_pt*)*SkiplistMaxLevel);
-    mystate.succs = (skiplist::Segment_pt**)malloc(sizeof(skiplist::Segment_pt*)*SkiplistMaxLevel);
-    memset(mystate.preds,0,sizeof(skiplist::Segment_pt*)*SkiplistMaxLevel);
-    memset(mystate.succs,0,sizeof(skiplist::Segment_pt*)*SkiplistMaxLevel);
-    // int nofind = 0;
-    // int conflicts = 0;
-    // int split = 0;
-    // int max_conflict = 0;
     for(int i = bound_l;i<bound_r;i++){
         if(dataq0[i] == 0 || dataq0[i] == UNINT_MAX)
             continue;
-        mystate.key = dataq0[i];
-        mystate.value = i;
         // cout<<i<<endl;
-        list->Insert(&mystate);
+        list->Add(dataq0[i]);
     }
     // conflicts_thread[id] = conflicts;
     // split_block[id] = split;
     #if DEBUG
     cerr<<"max conflict:"<<max_conflict<<endl;
     #endif
-    free(mystate.preds);
-    free(mystate.succs);
 }
 
 void test_query(const int id,const int bound_l,const int bound_r ){
-    skiplist::State mystate;
-    mystate.preds = (skiplist::Segment_pt**)malloc(sizeof(skiplist::Segment_pt*)*SkiplistMaxLevel);
-    mystate.succs = (skiplist::Segment_pt**)malloc(sizeof(skiplist::Segment_pt*)*SkiplistMaxLevel);
-    memset(mystate.preds,0,sizeof(skiplist::Segment_pt*)*SkiplistMaxLevel);
-    memset(mystate.succs,0,sizeof(skiplist::Segment_pt*)*SkiplistMaxLevel);
     int nofind = 0;
     for(int i = bound_l;i<bound_r;i++){
         if(dataq0[i] == 0 || dataq0[i] == UNINT_MAX)
             continue;
-        mystate.key = dataq0[i];
-        mystate.value = i;
-        std::pair<int,int> res = list->Lookup(&mystate);
+        std::pair<int,int> res = list->Lookup(dataq0[i]);
         if(!res.first || res.second != i){
             // cerr<<dataq0[i];
             // string kk = to_string(dataq0[i])+"\n";
@@ -89,21 +69,10 @@ void test_query(const int id,const int bound_l,const int bound_r ){
         }
     }
     cerr<<"nofind:"<<nofind<<endl;
-    free(mystate.preds);
-    free(mystate.succs);
 }
 
 int main(){
     GetData2();
-    skiplist::State mystate;
-    // mystate.ppreds = (skiplist::Segment_pt**)malloc(sizeof(skiplist::Segment_pt*)*SkiplistMaxLevel);
-    mystate.preds = (skiplist::Segment_pt**)malloc(sizeof(skiplist::Segment_pt*)*SkiplistMaxLevel);
-    // mystate.currs = (skiplist::Segment_pt**)malloc(sizeof(skiplist::Segment_pt*)*SkiplistMaxLevel);
-    mystate.succs = (skiplist::Segment_pt**)malloc(sizeof(skiplist::Segment_pt*)*SkiplistMaxLevel);
-    // memset(mystate.ppreds,0,sizeof(skiplist::Segment_pt*)*SkiplistMaxLevel);
-    memset(mystate.preds,0,sizeof(skiplist::Segment_pt*)*SkiplistMaxLevel);
-    // memset(mystate.currs,0,sizeof(skiplist::Segment_pt*)*SkiplistMaxLevel);
-    memset(mystate.succs,0,sizeof(skiplist::Segment_pt*)*SkiplistMaxLevel);
     srand((int)time(0));
     cerr<<"NUMBERDATA:"<<NUMBERDATA<<endl;
     cerr<<"THREAD_NUMBER:"<<THREAD_NUMBER<<endl;
@@ -111,17 +80,12 @@ int main(){
     cerr<<"PREINSERT:"<<PREINSERT<<endl;
     cerr<<"segment max size:"<<list->segment_max_size<<endl;
     std::vector<thread> threads;//(THREAD_NUMBER);
-    if(THREAD_NUMBER == 16){
-        list->segment_max_size = 1e5;
-    }
     const auto start_time = std::chrono::steady_clock::now();
     for(int i = 0;i<PREINSERT;i++){
         if(dataq0[i] == 0 || dataq0[i] == UNINT_MAX)
             continue;
-        mystate.key = dataq0[i];
-        mystate.value = i;
         // cerr<<i<<endl;
-        list->Insert(&mystate);
+        list->Add(dataq0[i]);
     }
     cerr<<"preinsert finish"<<endl;
     #if DEBUG
@@ -159,20 +123,6 @@ int main(){
     // cerr<<"write conflicts:"<<conflicts<<endl;
     std::vector<thread> threads2;//(THREAD_NUMBER);
     const auto start_time2 = std::chrono::steady_clock::now();
-    // int nofind = 0;
-    // for(int i =0;i<NUMBERDATA;i++){
-    //     if(dataq0[i] == 0 || dataq0[i] == UNINT_MAX)
-    //         continue;
-    //     mystate.key = dataq0[i];
-    //     std::pair<int,int> res = list->Lookup(&mystate);
-    //     if(!res.first){
-    //         // list->Lookup(&mystate);
-    //         // cerr<<dataq0[i];
-    //         // string kk = to_string(dataq0[i])+"\n";
-    //         // write_into_file("./nofind.txt",kk.c_str());
-    //         nofind++;
-    //     }
-    // }
     kk = 0;
     for(int idx=0; idx < THREAD_NUMBER; idx++){
         threads2.push_back(thread(test_query, idx,kk,kk+key_dis));
@@ -185,6 +135,4 @@ int main(){
     const auto duration2 = std::chrono::duration_cast<std::chrono::microseconds>(end_time2 - start_time2);
     std::cout << "query time: " << duration2.count() << "us"<<std::endl;
     // cerr<<"no find:"<<nofind<<endl;
-    free(mystate.preds);
-    free(mystate.succs);
 }
