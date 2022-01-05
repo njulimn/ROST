@@ -587,7 +587,27 @@ class skiplist {
 
         bool SplitSegment(Segment_pt *root,Index** preds,K *_keys,int*  _values,int _size,K _start,K _stop);
 
-        subtree* build_tree_none();
+        subtree* build_tree_none(){
+            subtree* n = new_subtree(1);
+            n->is_two = 0;
+            n->build_size = 0;
+            n->size = 0;
+            n->fixed = 0;
+            // n->child_ptr = 0;
+            n->num_inserts = n->num_insert_to_data = 0;
+            n->num_items = 1;
+            n->slope = n->intercept = 0;
+            n->start = UNINT_MAX;
+            n->stop = UNINT_MAX;
+            n->items = new_items(1);
+            memset(n->items,0,1);
+            n->none_bitmap = new_bitmap(1);
+            n->none_bitmap[0] = 0;
+            BITMAP_SET(n->none_bitmap, 0);
+            n->child_bitmap = new_bitmap(1);
+            n->child_bitmap[0] = 0;
+            return n;
+        }
 
         subtree* build_tree_two(K key1, int value1, K key2, int value2,K start=0,K stop=0,subtree* x = nullptr);
 
@@ -595,7 +615,7 @@ class skiplist {
 
         std::pair<long double,int> scan_and_destroy_subtree(subtree* root,K *keys,V *values, bool destory = true);
 
-        Segment_pt* NewSegment_pt(int level,K base,K bound,subtree* n){
+        Segment_pt* NewSegment_pt(K base,K bound,subtree* n){
             Segment_pt *newseg = new Segment_pt;
             newseg->anchor = base;
             newseg->bound = bound;
@@ -607,7 +627,7 @@ class skiplist {
             return newseg;
         }
 
-        Segment_pt* NewSegment_pt_nodata(int level,K base,K bound){
+        Segment_pt* NewSegment_pt_nodata(K base,K bound){
             Segment_pt *newseg = new Segment_pt;
             newseg->anchor = base;
             newseg->bound = bound;
@@ -619,7 +639,7 @@ class skiplist {
             return newseg;
         }
         
-        Segment_pt* NewSegment_pt(int level,K base,K bound){
+        Segment_pt* NewSegment_pt(K base,K bound){
             Segment_pt *newseg = new Segment_pt;
             newseg->anchor = base;
             newseg->bound = bound;
@@ -631,15 +651,15 @@ class skiplist {
             return newseg;
         }
         
-        Index* NewIndex(int level,K base){
+        Index* NewIndex(int level,K base,K bound){
             Index *newIndex = new Index;
             newIndex->level = level;
             newIndex->key = base;
             newIndex->forward = new std::atomic<Index*>[level];
-            newIndex->downward = build_tree_none();
+            newIndex->downward = NewSegment_pt(base,bound);
         }
 
-        Index* NewIndex(int level,K base,Segment_pt* dataSeg){
+        Index* NewIndexWithSeg(int level,K base,Segment_pt* dataSeg){
             Index *newIndex = new Index;
             newIndex->level = level;
             newIndex->key = base;
@@ -660,10 +680,10 @@ class skiplist {
         skiplist();
         //TODO:skiplist 构造函数
         skiplist(int MaxLevel,int gamma):max_height_(1),MaxLevel(MaxLevel),gamma(gamma),segment_max_size(1e5),linearity(0.98){
-            head_ = NewIndex(MaxLevel,0);
-            tail_ = NewIndex(MaxLevel,UNINT_MAX);
+            head_ = NewIndex(MaxLevel,0,0);
+            tail_ = NewIndex(MaxLevel,UNINT_MAX,UNINT_MAX);
             int level_idx1 = RandLevel();
-            Index* Idx1 = NewIndex(level_idx1,1);
+            Index* Idx1 = NewIndex(level_idx1,1,UNINT_MAX);
             //update the height of skiplist
             int max_height = 1;
             while (level_idx1 > max_height) {
@@ -673,8 +693,8 @@ class skiplist {
                 break;
                 }
             }
-            Idx1->downward->start = 1;
-            Idx1->downward->stop = UNINT_MAX;
+            Idx1->downward->anchor = 1;
+            Idx1->downward->bound = UNINT_MAX;
             for(int i = 0;i<level_idx1;i++){
                 head_->SetNext(i,Idx1);
                 Idx1->SetNext(i,tail_);

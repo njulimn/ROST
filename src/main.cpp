@@ -10,6 +10,8 @@
 #define NOFINDDEBUG 0
 #define QUERY_ 0
 
+skiplist<unsigned int,int> *list = new skiplist<unsigned int,int>(SkiplistMaxLevel,Gm);
+
 int main(){
     
 }
