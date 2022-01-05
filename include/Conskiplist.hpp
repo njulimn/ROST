@@ -448,7 +448,19 @@ class skiplist {
             K key;
             std::atomic<Index*> *forward;
             Segment_pt *downward;
-            //TODO:Index Append、Next、SetNext、newIndex
+
+            Index* Next(int n) {
+                assert(n >= 0);
+                // Use an 'acquire load' so that we observe a fully initialized
+                // version of the returned Node.
+                return (forward[n].load(std::memory_order_acquire));
+            }
+
+            void SetNext(int n, Index* x) {
+                assert(n >= 0);
+                forward[n].store(x, std::memory_order_release);
+            }
+            
             inline void Append(Index *pred,Index *locate);
         };
         
@@ -619,18 +631,58 @@ class skiplist {
             return newseg;
         }
         
+        Index* NewIndex(int level,K base){
+            Index *newIndex = new Index;
+            newIndex->level = level;
+            newIndex->key = base;
+            newIndex->forward = new std::atomic<Index*>[level];
+            newIndex->downward = build_tree_none();
+        }
+
+        Index* NewIndex(int level,K base,Segment_pt* dataSeg){
+            Index *newIndex = new Index;
+            newIndex->level = level;
+            newIndex->key = base;
+            newIndex->forward = new std::atomic<Index*>[level];
+            newIndex->downward = dataSeg;
+        }
+
         /////////////////////////////////
         std::atomic<int> max_height_; 
         int MaxLevel;
 		int gamma;
         int segment_max_size;
         double linearity;
-        Segment_pt *head_;
-        Segment_pt *tail_;
+        Index* head_;
+        Index* tail_;
+        // Segment_pt *head_;
+        // Segment_pt *tail_;
         skiplist();
         //TODO:skiplist 构造函数
         skiplist(int MaxLevel,int gamma):max_height_(1),MaxLevel(MaxLevel),gamma(gamma),segment_max_size(1e5),linearity(0.98){
-            
+            head_ = NewIndex(MaxLevel,0);
+            tail_ = NewIndex(MaxLevel,UNINT_MAX);
+            int level_idx1 = RandLevel();
+            Index* Idx1 = NewIndex(level_idx1,1);
+            //update the height of skiplist
+            int max_height = 1;
+            while (level_idx1 > max_height) {
+                if (max_height_.compare_exchange_weak(max_height, level_idx1)) {
+                // successfully updated it
+                max_height = level_idx1;
+                break;
+                }
+            }
+            Idx1->downward->start = 1;
+            Idx1->downward->stop = UNINT_MAX;
+            for(int i = 0;i<level_idx1;i++){
+                head_->SetNext(i,Idx1);
+                Idx1->SetNext(i,tail_);
+            }
+            for(int i = level_idx1;i<=MaxLevel;i++){
+                head_->SetNext(i, tail_);
+                tail_->SetNext(i,nullptr);
+            }
         }
 
         inline int GetMaxHeight() const {
