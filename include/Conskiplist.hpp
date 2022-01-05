@@ -357,12 +357,12 @@ class skiplist {
             // int child_ptr = 0;
             int num_items = 0; // size of items
             double slope = 0,intercept = 0;
-            unsigned int start = UNINT_MAX,stop=UNINT_MAX;
+            K start = UNINT_MAX,stop=UNINT_MAX;
             Item* items = nullptr;
             bitmap_t* none_bitmap = nullptr; // 1 means None, 0 means Data or Child
             bitmap_t* child_bitmap = nullptr; // 1 means Child. will always be 0 when none_bitmap is 1
             
-            inline int predict(unsigned int key){
+            inline int predict(K key){
                 double v = this->slope * (static_cast<long double>(key)-static_cast<long double>(this->start)) + this->intercept;
                 // if (std::isnan(v)){
                 // 	return this->num_items - 1;
@@ -378,8 +378,8 @@ class skiplist {
 
         };
         struct Segment_pt{
-            unsigned int anchor;//left guard
-            unsigned int bound;//right guard
+            K anchor;//left guard
+            K bound;//right guard
             subtree* DataArray;
             bool split;
             std::atomic<bool> lock;//false means segment is locked
@@ -445,7 +445,7 @@ class skiplist {
 
         struct Index{
             int level;
-            unsigned key;
+            K key;
             std::atomic<Index*> *forward;
             Segment_pt *downward;
             //TODO:Index Append、Next、SetNext、newIndex
@@ -529,7 +529,7 @@ class skiplist {
             bitmap_allocator.deallocate(x, n);
         }
         
-        inline int compare_(unsigned int k1,unsigned int  k2){
+        inline int compare_(K k1,K  k2){
             if(k1<k2){
                 return -1;
             }
@@ -540,9 +540,9 @@ class skiplist {
             }
         }
 
-        void insert_subtree(Segment_pt* root,unsigned int key,int value,subtree* path[],int &path_size);
+        void insert_subtree(Segment_pt* root,K key,V value,subtree* path[],int &path_size);
         
-        std::pair<int,node*> find_subtree(subtree* n,unsigned int key){
+        std::pair<int,node*> find_subtree(subtree* n,K key){
             // subtree* n = this->DataArray;
             vector<subtree*> paths;
             vector<int> poss;
@@ -567,30 +567,23 @@ class skiplist {
             return {false,0};
         }
 
-        std::pair<unsigned int,unsigned int> computeRange(int pos,subtree* x){
-            unsigned int start = 0,stop = 0;
-            start = (pos - x->intercept)/(x->slope * 1000.0)*1000.0;
-            stop = (pos+1 - x->intercept)/(x->slope * 1000.0)*1000.0;
-            return {start+x->start,stop+x->start};
-        }
-
         inline int compute_gap_count(int size) {
             if (size >= 1000000) return 1;
             if (size >= 100000) return 2;
             return 5;
         }
 
-        bool SplitSegment(Segment_pt *root,Index** preds,unsigned int *_keys,int*  _values,int _size,unsigned int _start,unsigned int _stop);
+        bool SplitSegment(Segment_pt *root,Index** preds,K *_keys,int*  _values,int _size,K _start,K _stop);
 
         subtree* build_tree_none();
 
-        subtree* build_tree_two(unsigned int key1, int value1, unsigned int key2, int value2,unsigned int start=0,unsigned int stop=0,subtree* x = nullptr);
+        subtree* build_tree_two(K key1, int value1, K key2, int value2,K start=0,K stop=0,subtree* x = nullptr);
 
-        subtree* rebuild_tree(unsigned int *_keys,int* _values,int _size,unsigned int start,unsigned int stop,bool plr = false,double top_slope = 0,double top_intercept = 0);
+        subtree* rebuild_tree(K *_keys,int* _values,int _size,K start,K stop,bool plr = false,double top_slope = 0,double top_intercept = 0);
 
-        std::pair<long double,int> scan_and_destroy_subtree(subtree* root,unsigned int*keys,int* values, bool destory = true);
+        std::pair<long double,int> scan_and_destroy_subtree(subtree* root,K *keys,V *values, bool destory = true);
 
-        Segment_pt* NewSegment_pt(int level,unsigned int base,unsigned int bound,subtree* n){
+        Segment_pt* NewSegment_pt(int level,K base,K bound,subtree* n){
             Segment_pt *newseg = new Segment_pt;
             newseg->anchor = base;
             newseg->bound = bound;
@@ -602,7 +595,7 @@ class skiplist {
             return newseg;
         }
 
-        Segment_pt* NewSegment_pt_nodata(int level,unsigned int base,unsigned int bound){
+        Segment_pt* NewSegment_pt_nodata(int level,K base,K bound){
             Segment_pt *newseg = new Segment_pt;
             newseg->anchor = base;
             newseg->bound = bound;
@@ -614,7 +607,7 @@ class skiplist {
             return newseg;
         }
         
-        Segment_pt* NewSegment_pt(int level,unsigned int base,unsigned int bound){
+        Segment_pt* NewSegment_pt(int level,K base,K bound){
             Segment_pt *newseg = new Segment_pt;
             newseg->anchor = base;
             newseg->bound = bound;
@@ -651,10 +644,10 @@ class skiplist {
         Segment_pt* Scan(K key, Index** preds);
 
         //skiplist lookup a key
-        std::pair<int,int> Lookup(K key);
+        std::pair<int,V> Lookup(K key);
 
         //skiplist add a key 
-        void Add(K key);
+        void Add(K key,V value);
 
         int RandLevel(){
             int lvl = 1;
