@@ -620,12 +620,79 @@ class skiplist {
             }
         }
 
-        void insert_subtree(Segment_pt* root,K key,V value,subtree* path[],int &path_size);
+        void insert_subtree(Segment_pt* root,K key,V value,subtree* path[],int &path_size){
+            int insert_to_data = 0;
+            subtree* n = root->DataArray;
+            while(1){
+                path[path_size] = n;
+                path_size++;
+                // n->stop = max(n->stop,key);
+                int pos = n->predict(key);
+                if (BITMAP_GET(n->none_bitmap, pos) == 1) {
+                        RT_ASSERT(BITMAP_GET(n->child_bitmap, pos) == 0);
+                        BITMAP_CLEAR(n->none_bitmap, pos);
+                        n->items[pos].comp.data.key = key;
+                        n->items[pos].comp.data.value = value;
+                        n->size++;
+                        n->num_inserts++;               
+                        break;
+                } else if (BITMAP_GET(n->child_bitmap, pos) == 0) {
+                    //key冲突
+                    if(n->items[pos].comp.data.key == key){
+                        n->items[pos].comp.data.value = value;
+                        for(int i = 0;i<path_size-1;i++){
+                            path[i]->size--;
+                            path[i]->num_inserts--;
+                        }
+                        // n->size++;
+                        // n->num_inserts++; 
+                        break;
+                    }
+                    if(path_size == 1 && n->size == 1){
+                        //从tree_one到tree_two，将tree_one作为参数传入后限制start、stop范围
+                        subtree* newtree =  build_tree_two(key, value, n->items[pos].comp.data.key, n->items[pos].comp.data.value,0,0,n);
+                        memcpy(root->DataArray, newtree, sizeof(subtree));
+                        path[0] = root->DataArray;
+                        delete_subtree(newtree, 1);
+                        break;
+                    }
+                    std::pair<unsigned int,unsigned int>line = computeRange(pos,n);
+                    BITMAP_SET(n->child_bitmap, pos);
+                    // n->child_ptr++;
+                    //产生非顶层subtree，此情况下star stop考虑其父tree
+                    if(n->is_two){
+                        n->is_two = 0;
+                    }
+                    n->size++;
+                    n->num_inserts++;
+                    n->items[pos].comp.child  = build_tree_two(key, value, n->items[pos].comp.data.key, n->items[pos].comp.data.value,min(line.first,min(key,n->items[pos].comp.data.key)),line.second);
+                    insert_to_data = 1;
+                    path[path_size] = n->items[pos].comp.child;
+                    path_size++;
+                    break;
+                } else {
+                    n->size++;
+                    n->num_inserts++;
+                    RT_ASSERT(n->items[pos].comp.child != nullptr);
+                    n = n->items[pos].comp.child;
+                }
+            }
+            for(int i = 0;i<path_size;i++){
+                path[i]->num_insert_to_data += insert_to_data;
+            }
+        }
         
         inline int compute_gap_count(int size) {
             if (size >= 1000000) return 1;
             if (size >= 100000) return 2;
             return 5;
+        }
+
+        std::pair<unsigned int,unsigned int> computeRange(int pos,subtree* x){
+            unsigned int start = 0,stop = 0;
+            start = (pos - x->intercept)/(x->slope * 1000.0)*1000.0;
+            stop = (pos+1 - x->intercept)/(x->slope * 1000.0)*1000.0;
+            return {start+x->start,stop+x->start};
         }
 
         subtree* build_tree_none(){
@@ -1096,7 +1163,7 @@ class skiplist {
             }
 
             int seg_size = static_cast<int>(seg.size());
-            int to_level = root->level;
+            // int to_level = root->level;
             //create new segment and index
             vector<Segment_pt*> split_segments(seg_size);//store the all segment_pt
             vector<SNode*> SNode_inner_pred(MaxLevel+1,nullptr);
@@ -1187,7 +1254,7 @@ class skiplist {
 
                 }else{
                     root_dataarray = new_subtree;
-                    lower_bound = bound;
+                    split_lower_bound = bound;
                 }
                   
             }
@@ -1222,11 +1289,11 @@ class skiplist {
                 }
 
                 //insert index
-                Index *pred = nullptr;
-                Index *curr = nullptr;
-                Index *succ = nullptr;
+                SNode *pred = nullptr;
+                SNode *curr = nullptr;
+                SNode *succ = nullptr;
                 for(int i = 1;i<=segment_max_height;i++){
-                    pred = reinterpret_cast<Index*>(preds[i]);
+                    pred = preds[i];
                     //move forward
                     curr = pred->Next();
                     succ = curr->Next();
@@ -1239,15 +1306,16 @@ class skiplist {
                         pred = curr;
                     }
                     if(SNode_left[i]){
-                        pred->AppendNext(SNode_left[i],SNode_right[i]);
+                        reinterpret_cast<Index*>(pred)->AppendNext(SNode_left[i],SNode_right[i]);
                     }
                 }
                 
                 for(int i = 1;i<seg_size;i++){
                     split_segments[i]->ReleaseSplit();
                 }
-
+                return true;
             }
+            return true;
         }
 
         //--------------------------skiplist member variable--------------------------//
@@ -1324,17 +1392,18 @@ class skiplist {
                 if(key >= curr->Key){
                     //key is bwtween curr and succ
                     pred = curr;
-                }else{
-                    //key is before or located in curr
-                    if(!locate && key >= curr->Key){
-                        //key is located in curr
-                        locate = curr;
-                        break;
-                    }
                 }
+                // else{
+                //     //key is before or located in curr
+                //     if(!locate && key >= curr->Key){
+                //         //key is located in curr
+                //         locate = curr;
+                //         break;
+                //     }
+                // }
             }
             //return segment_pt
-            locate = reinterpret_cast<Index*>(locate)->Down();
+            locate = reinterpret_cast<Index*>(pred)->Down();
             return locate;
         }
 
@@ -1365,19 +1434,20 @@ class skiplist {
                 if(key >= curr->Key){
                     //key is bwtween curr and succ
                     pred = curr;//curr != tail_
-                }else{
-                    //key is before or located in curr
-                    if(!locate && key >= curr->Key){
-                        //key is located in curr
-                        locate = curr;
-                        preds[l] = curr;
-                        break;
-                    }
                 }
+                // else{
+                //     //key is before or located in curr
+                //     if(!locate && key >= curr->Key){
+                //         //key is located in curr
+                //         locate = curr;
+                //         preds[l] = curr;
+                //         break;
+                //     }
+                // }
                 preds[l] = pred;
             }
             //return segment_pt
-            locate = reinterpret_cast<Index*>(locate)->Down();
+            locate = reinterpret_cast<Index*>(pred)->Down();
             preds[0] = locate;
             return locate;
         }
@@ -1391,7 +1461,9 @@ class skiplist {
         //skiplist add a key 
         void Add(K key,V value){
             SNode* preds[MaxLevel+1];
-            memset(preds,nullptr,sizeof(SNode*)*MaxLevel+1);
+            for(int i =0;i<=MaxLevel;i++){
+                preds[i] = nullptr;
+            }
             Segment_pt* locate = reinterpret_cast<Segment_pt*>(Scan(key,preds));
             while(true){
                 while(!locate->CASLock());
