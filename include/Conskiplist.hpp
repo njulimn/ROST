@@ -397,7 +397,7 @@ class skiplist {
                 return std::min(this->num_items - 1, static_cast<int>(v));
             }
 
-            std::pair<int,node*> find_key_in_subtree(K key){
+            std::pair<bool,V> find_key_in_subtree(K key){
                 subtree* n = this;
                 // vector<subtree*> paths;
                 // vector<int> poss;
@@ -412,7 +412,7 @@ class skiplist {
                     }
                     else if(BITMAP_GET(n->child_bitmap, pos) == 0){
                         //checkTypeEqualData
-                        return {n->items[pos].comp.data.key == key,&(n->items[pos].comp.data)};
+                        return {n->items[pos].comp.data.key == key,n->items[pos].comp.data.value};
                     }
                     else{
                         n = n->items[pos].comp.child;
@@ -707,6 +707,28 @@ class skiplist {
             n->slope = n->intercept = 0;
             n->start = UNINT_MAX;
             n->stop = UNINT_MAX;
+            n->items = new_items(1);
+            memset(n->items,0,1);
+            n->none_bitmap = new_bitmap(1);
+            n->none_bitmap[0] = 0;
+            BITMAP_SET(n->none_bitmap, 0);
+            n->child_bitmap = new_bitmap(1);
+            n->child_bitmap[0] = 0;
+            return n;
+        }
+
+        subtree* build_tree_none(K st,K ed){
+            subtree* n = new_subtree(1);
+            n->is_two = 0;
+            n->build_size = 0;
+            n->size = 0;
+            n->fixed = 0;
+            // n->child_ptr = 0;
+            n->num_inserts = n->num_insert_to_data = 0;
+            n->num_items = 1;
+            n->slope = n->intercept = 0;
+            n->start = st;
+            n->stop = ed;
             n->items = new_items(1);
             memset(n->items,0,1);
             n->none_bitmap = new_bitmap(1);
@@ -1038,7 +1060,7 @@ class skiplist {
         //data array = build_tree_none
         SNode* NewSegment_pt(K base,K bound,int level){
             SNode *newseg = new Segment_pt(base,bound,level);
-            reinterpret_cast<Segment_pt*>(newseg)->DataArray =  build_tree_none();
+            reinterpret_cast<Segment_pt*>(newseg)->DataArray =  build_tree_none(base,bound);
             reinterpret_cast<Segment_pt*>(newseg)->InitLock();
             reinterpret_cast<Segment_pt*>(newseg)->InitSplit();
             reinterpret_cast<Segment_pt*>(newseg)->SetNext(nullptr);
@@ -1201,9 +1223,9 @@ class skiplist {
                 //rebuild subtree
                 subtree* new_subtree = nullptr;
                 if(ed-st == 1){
-                    new_subtree = build_tree_none();
-                    new_subtree->start = base;
-                    new_subtree->stop = bound;
+                    new_subtree = build_tree_none(base,bound);
+                    // new_subtree->start = base;
+                    // new_subtree->stop = bound;
                     BITMAP_CLEAR(new_subtree->none_bitmap,0);
                     new_subtree->size++;
                     new_subtree->num_inserts++;
@@ -1393,17 +1415,10 @@ class skiplist {
                     //key is bwtween curr and succ
                     pred = curr;
                 }
-                // else{
-                //     //key is before or located in curr
-                //     if(!locate && key >= curr->Key){
-                //         //key is located in curr
-                //         locate = curr;
-                //         break;
-                //     }
-                // }
+                pred = reinterpret_cast<Index*>(pred)->Down();
             }
             //return segment_pt
-            locate = reinterpret_cast<Index*>(pred)->Down();
+            locate = pred;//reinterpret_cast<Seg*>(pred)->Down();
             return locate;
         }
 
@@ -1445,9 +1460,10 @@ class skiplist {
                 //     }
                 // }
                 preds[l] = pred;
+                pred = reinterpret_cast<Index*>(pred)->Down();
             }
             //return segment_pt
-            locate = reinterpret_cast<Index*>(pred)->Down();
+            locate = pred;//reinterpret_cast<Seg*>(pred)->Down();
             preds[0] = locate;
             return locate;
         }

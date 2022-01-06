@@ -13,5 +13,7 @@
 skiplist<unsigned int,int> *list = new skiplist<unsigned int,int>(SkiplistMaxLevel,Gm);
 
 int main(){
-    
+    list->Add(1,2);
+    std::pair<int,int> res = list->Lookup(1);
+    std::cout<<res.first<<","<<res.second<<std::endl;
 }

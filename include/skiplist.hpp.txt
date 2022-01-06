@@ -1562,7 +1562,7 @@ std::pair<long double,int> skiplist::scan_and_destroy_subtree(subtree* _root,uns
     return {1,mark};
 }
 
-void skiplist::insert_subtree(Segment_pt* root,unsigned int key,int value,subtree* path[],int &path_size){
+void skiplist::insert_subtree(Segment_pt* root,K key,V value,subtree* path[],int &path_size){
     int insert_to_data = 0;
     subtree* n = root->DataArray;
     while(1){
