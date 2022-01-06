@@ -1089,7 +1089,7 @@ class skiplist {
                 SNode* curr = new Index(base);
                 reinterpret_cast<Index*>(curr)->SetNext(nullptr);
                 reinterpret_cast<Index*>(curr)->AppendBelow(pr_);
-                SnodeArray[l+1] = curr;
+                SnodeArray[l] = curr;
                 pr_ = curr;
             }
             return pr_;
@@ -1342,6 +1342,7 @@ class skiplist {
                 for(int i = 1;i<seg_size;i++){
                     split_segments[i]->ReleaseSplit();
                 }
+
                 return true;
             }
             return true;
