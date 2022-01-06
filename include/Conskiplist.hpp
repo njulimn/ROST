@@ -333,14 +333,13 @@ public:
 	}
 };
 
-typedef struct node{
-    unsigned key;
-    int value;
-}node;
-
 template<class K, class V>
 class skiplist {
     public:
+        struct node{
+            K key;
+            V value;
+        };
         struct SNode{
             SNode(K base,bool type):Key(base),isIndex(type){}
             K Key;//the lower bound
@@ -1136,6 +1135,7 @@ class skiplist {
                         //SplitSegment already released the write lock of locate
                         delete[] keys;
                         delete[] values;  
+                        return;
                     }
                 }
                 subtree* newsubtree = rebuild_tree(keys,values,ESIZE,n_start,n_stop);
@@ -1144,7 +1144,9 @@ class skiplist {
                 locate->ReleaseLock();
                 delete[] keys;
                 delete[] values;  
+                return;
             }
+            return;
         }
 
         bool SplitSegment(Segment_pt *root,SNode** preds,K *_keys,int*  _values,int _size,K _start,K _stop){
@@ -1185,6 +1187,7 @@ class skiplist {
             }
 
             int seg_size = static_cast<int>(seg.size());
+            std::cout<<"split seg_size "<<seg_size<<std::endl;
             // int to_level = root->level;
             //create new segment and index
             vector<Segment_pt*> split_segments(seg_size);//store the all segment_pt
@@ -1256,13 +1259,17 @@ class skiplist {
                     // split_indexes[i-1] = top_index;
 
                     //link segment_pt
-                    if(SNode_inner_pred[0]){
-                        reinterpret_cast<Segment_pt*>(SNode_inner_pred[0])->SetNext(next_seg);//no need to loop
-                        SNode_inner_pred[0] = next_seg;
+                    if(SNode_inner_pred[0]){//if pre_segment exsits
+                        reinterpret_cast<Segment_pt*>(SNode_inner_pred[0])->SetNext(next_seg);//no need to loop   
                     }
-                    SNode* pr_ = top_index;
+                    SNode_inner_pred[0] = next_seg;
+                    if(i == 1)
+                        SNode_left[0] = next_seg;
+                    SNode_right[0] = next_seg;
+                    //link the above index
                     for(int l = height_tmp;l>0;l--){
-                        reinterpret_cast<Index*>(pr_)->SetNext(nullptr);
+                        SNode* pr_ = SNodeArray[l];//get the l level index 
+                        // reinterpret_cast<Index*>(pr_)->SetNext(nullptr);//this step finished in NewIndexArrayWithData  function
                         if(SNode_inner_pred[l]){
                             reinterpret_cast<Index*>(SNode_inner_pred[l])->SetNext(pr_);//no need to loop
                             SNode_inner_pred[l] = pr_;
@@ -1271,7 +1278,7 @@ class skiplist {
                             SNode_left[l] = pr_;
                         }
                         SNode_right[l] = pr_;
-                        pr_ = reinterpret_cast<Index*>(pr_)->Down();
+                        // pr_ = reinterpret_cast<Index*>(pr_)->Down();
                     }
 
                 }else{
@@ -1423,7 +1430,8 @@ class skiplist {
         }
 
         //for Add,preds[0,MaxLevel]
-        SNode* Scan(K key, SNode** preds){
+        SNode* Scan(K key, SNode* preds[]){
+            SNode* ppred = nullptr;
             SNode* pred = head_;
             SNode* curr = nullptr;
             SNode* succ = nullptr;
@@ -1432,15 +1440,21 @@ class skiplist {
             //down
             for(int l = MaxLevel;l>top_level;l--){
                 preds[l] = pred;
+                ppred = pred;
                 pred = reinterpret_cast<Index*>(pred)->Down();
             }
             //get the preds from [top_level,0)
             for(int l = top_level;l>0;l--){
                 //not sure key > curr's key
+                if(pred->isIndex == false){
+                    cerr<<"no";
+                }
+                RT_ASSERT(pred->isIndex);
                 curr = reinterpret_cast<Index*>(pred)->Next();
                 RT_ASSERT(curr!=nullptr);
                 succ = reinterpret_cast<Index*>(curr)->Next();   
                 while(succ && succ->Key <= key){
+                    ppred = pred;
                     pred = curr;
                     curr = succ;
                     succ = reinterpret_cast<Index*>(succ)->Next();
@@ -1448,6 +1462,7 @@ class skiplist {
                 
                 if(key >= curr->Key){
                     //key is bwtween curr and succ
+                    ppred = pred;
                     pred = curr;//curr != tail_
                 }
                 // else{
@@ -1460,6 +1475,7 @@ class skiplist {
                 //     }
                 // }
                 preds[l] = pred;
+                ppred = pred;
                 pred = reinterpret_cast<Index*>(pred)->Down();
             }
             //return segment_pt
