@@ -469,6 +469,7 @@ class skiplist {
                 SNode* pr_next = this->Next();//2.暂存当前Index的next
                 reinterpret_cast<Segment_pt*>(next)->SetNext(pr_next);//3.将next的后继修改为pr_next
                 RT_ASSERT(this->CASNext(pr_next,next));//4.compare and set
+                this->ReleaseLock();
                 return;
             }
 
