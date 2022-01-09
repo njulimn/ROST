@@ -13,10 +13,11 @@
 #include <cstring>
 #include <time.h>
 #include <queue>
-#include <mutex>
 #include <atomic>
 #include <assert.h>
 #include <random>
+#include <mutex>
+#include <shared_mutex>
 
 #define PREFETCH(addr, rw, locality) __builtin_prefetch
 typedef uint8_t bitmap_t;
@@ -36,7 +37,7 @@ typedef uint8_t bitmap_t;
 #define USEGREEDYPCCS 0
 #define DEBUG 0
 #define SHOWLINEAR 0
-#define Gm 128
+#define Gm 64
 #define MAX_DEPTH 6
 #define WRITESEG 0
 
@@ -426,50 +427,78 @@ class skiplist {
             K bound;//right guard,the upper bound
             int level;
             subtree* DataArray;
-            std::atomic<bool> lock;//false means segment is locked
-            std::atomic<bool> spliting;//true means segment is locked
+            // std::shared_mutex write;
+            mutable std::shared_mutex write;//TODO:
+            // std::atomic<bool> write;//false means segment is locked
+            std::atomic<bool> spliting;//true means segment is spliting
 
-            Segment_pt(K base,K bnd,int lvl):SNode(base,false),bound(bnd),level(lvl){}       
+            Segment_pt(K base,K bnd,int lvl):SNode(base,false),bound(bnd),level(lvl),write(shared_mutex()){}       
 
-            inline void InitLock(){
-                lock.store(true, std::memory_order_release);
-            }
+            // inline void InitLock(){
+            //     write.store(true, std::memory_order_release);
+            // }
 
             inline void InitSplit(){
                 spliting.store(false, std::memory_order_release);
             }
 
-            inline bool ReadLock(){
-                return lock.load(std::memory_order_acquire);
-            }
+            // inline bool ReadLock(){
+            //     return write.load(std::memory_order_acquire);
+            // }
 
             inline bool ReadSplit(){
                 return spliting.load(std::memory_order_acquire);
             }
 
-            inline bool CASLock(bool free = true,bool block=false){
-                return lock.compare_exchange_strong(free, block);
+            // inline bool CASLock(bool free = true,bool block=false){
+            //     return write.compare_exchange_strong(free, block);
+            // }
+
+            inline void SharedLock(){
+                write.lock_shared();
+            }
+
+            inline bool TrySharedLock(){
+                return write.try_lock_shared();
+            }
+
+            inline void ReleaseShared(){
+                write.unlock_shared();
+            }
+
+            inline void ExclusiveLock(){
+                write.lock();
+            }
+
+            inline bool TryExclusiveLock(){
+                return write.try_lock();
+            }
+
+            inline void ReleaseExclusive(){
+                write.unlock();
             }
 
             inline bool CASSplit(bool free = false,bool block=true){
                 return spliting.compare_exchange_strong(free, block);
             }            
 
-            inline void ReleaseLock(){
-                lock.store(true, std::memory_order_release);
-            }
+            // inline void ReleaseLock(){
+            //     lock.store(true, std::memory_order_release);
+            // }
 
             inline void ReleaseSplit(){
                 spliting.store(false, std::memory_order_release);
             }
             
             //this is regarded as a precessor,next is going to insert after this
+            //useless
             void AppendNext(SNode* next){
-                while(! this->CASLock());//1.try to acquire the write lock of this
-                SNode* pr_next = this->Next();//2.暂存当前Index的next
+                ExclusiveLock();
+                //while(! this->CASLock());//1.try to acquire the write lock of this
+                SNode* pr_next = this->Next();//2.暂存当前segment的next
                 reinterpret_cast<Segment_pt*>(next)->SetNext(pr_next);//3.将next的后继修改为pr_next
                 RT_ASSERT(this->CASNext(pr_next,next));//4.compare and set
-                this->ReleaseLock();
+                ReleaseExclusive();
                 return;
             }
 
@@ -528,6 +557,7 @@ class skiplist {
             inline void AppendBelow(SNode* below) {
                 this->SetDown(below);
             }
+        
         };      
         typedef struct {
             int begin;
@@ -755,7 +785,7 @@ class skiplist {
             n->fixed = 0;
             // n->child_ptr = 0;
             n->num_inserts = n->num_insert_to_data = 0;
-            n->num_items = 32;
+            n->num_items = 32;//8
             n->items = new_items(n->num_items);
             memset(n->items,0,n->num_items);
             n->none_bitmap = new_bitmap(4);
@@ -1041,7 +1071,7 @@ class skiplist {
         SNode* NewSegment_pt(K base,K bound,int level,subtree* n){
             SNode *newseg = new Segment_pt(base,bound,level);
             reinterpret_cast<Segment_pt*>(newseg)->DataArray = n;
-            reinterpret_cast<Segment_pt*>(newseg)->InitLock();
+            // reinterpret_cast<Segment_pt*>(newseg)->InitLock();
             reinterpret_cast<Segment_pt*>(newseg)->InitSplit();
             reinterpret_cast<Segment_pt*>(newseg)->SetNext(nullptr);
             return newseg;
@@ -1061,7 +1091,7 @@ class skiplist {
         SNode* NewSegment_pt(K base,K bound,int level){
             SNode *newseg = new Segment_pt(base,bound,level);
             reinterpret_cast<Segment_pt*>(newseg)->DataArray =  build_tree_none(base,bound);
-            reinterpret_cast<Segment_pt*>(newseg)->InitLock();
+            // reinterpret_cast<Segment_pt*>(newseg)->InitLock();
             reinterpret_cast<Segment_pt*>(newseg)->InitSplit();
             reinterpret_cast<Segment_pt*>(newseg)->SetNext(nullptr);
             return newseg;
@@ -1115,15 +1145,24 @@ class skiplist {
             subtree* path[MAX_DEPTH*2];
             int path_size = 0;
             insert_subtree(locate,key,value,path,path_size);
-            const bool need_rebuild = path_size >= MAX_DEPTH;
+            subtree *n = locate->DataArray;
+            const int ESIZE = n->size;
+            const bool need_rebuild = path_size >= MAX_DEPTH ;//|| ESIZE > segment_max_size ;
             if(!need_rebuild){
-                locate->ReleaseLock();
+                locate->ReleaseExclusive();
+                #if DEBUG
+                    cerr<<"Release "<<locate<<endl;
+                #endif
+                return;
             }else{
                 if(! locate->CASSplit()){
-                    locate->ReleaseLock();
+                    //but this case is impossible
+                    locate->ReleaseExclusive();
+                    #if DEBUG
+                    cerr<<"Release "<<locate<<endl;
+                    #endif
+                    return;
                 }
-                subtree *n = locate->DataArray;
-                const int ESIZE = n->size;
                 unsigned int* keys = new unsigned int[ESIZE];
                 int* values = new int[ESIZE];
                 unsigned int n_start = n->start,n_stop = n->stop;
@@ -1142,7 +1181,10 @@ class skiplist {
                 subtree* newsubtree = rebuild_tree(keys,values,ESIZE,n_start,n_stop);
                 locate->DataArray = newsubtree;
                 locate->ReleaseSplit();
-                locate->ReleaseLock();
+                locate->ReleaseExclusive();
+                #if DEBUG
+                    cerr<<"Release "<<locate<<endl;
+                #endif
                 delete[] keys;
                 delete[] values;  
                 return;
@@ -1188,7 +1230,7 @@ class skiplist {
             }
 
             int seg_size = static_cast<int>(seg.size());
-            std::cout<<"split seg_size "<<seg_size<<std::endl;
+            // std::cout<<"split seg_size "<<seg_size<<std::endl;
             // int to_level = root->level;
             //create new segment and index
             vector<Segment_pt*> split_segments(seg_size);//store the all segment_pt
@@ -1245,16 +1287,21 @@ class skiplist {
 
                 //create segment ,index without data and link inner part
                 SNode* next_seg = nullptr;//the bottom segment_pt
-                SNode* top_index = nullptr;//the top level of index
+                // SNode* top_index = nullptr;//the top level of index
                 vector<SNode*> SNodeArray(height_tmp+1,nullptr);
                 if(i){
-                    top_index = NewIndexArrayWithData(height_tmp,base,bound,new_subtree,SNodeArray);
+                    NewIndexArrayWithData(height_tmp,base,bound,new_subtree,SNodeArray);
+                    // top_index = NewIndexArrayWithData(height_tmp,base,bound,new_subtree,SNodeArray);
                     next_seg = SNodeArray[0];
                     // next_seg = NewSegment_pt(base,bound,height_tmp,nullptr);//NewSegment_pt_nodata(base,bound);
                     // next_seg->split = 1;
                     split_segments[i] = reinterpret_cast<Segment_pt*>(next_seg);
                     // Acquire(next_seg);
-                    RT_ASSERT(reinterpret_cast<Segment_pt*>(next_seg)->CASLock());
+                    #if DEBUG
+                    cerr<<"try to next_seg"<<next_seg<<endl;
+                    #endif
+                    reinterpret_cast<Segment_pt*>(next_seg)->ExclusiveLock();
+                    // RT_ASSERT(reinterpret_cast<Segment_pt*>(next_seg)->CASLock());
                     RT_ASSERT(reinterpret_cast<Segment_pt*>(next_seg)->CASSplit());
                     // top_index = NewIndexWithSeg(height_tmp,base,next_seg);
                     // split_indexes[i-1] = top_index;
@@ -1292,7 +1339,7 @@ class skiplist {
             if(seg_size == 1){
                 root->DataArray = root_dataarray;
                 root->ReleaseSplit();
-                root->ReleaseLock();
+                root->ReleaseExclusive();
                 return true;
             }else{
                 //link the bottom(segment_pt)
@@ -1303,10 +1350,16 @@ class skiplist {
                 root->bound = split_lower_bound;
                 root->DataArray = root_dataarray;
                 root->ReleaseSplit();
-                root->ReleaseLock();
+                root->ReleaseExclusive();
+                #if DEBUG
+                cerr<<"Release "<<root<<endl;
+                #endif
                 //release the write lock of the new segment
                 for(int i = 1;i<seg_size;i++){
-                    split_segments[i]->ReleaseLock();
+                    split_segments[i]->ReleaseExclusive();
+                    #if DEBUG
+                    cerr<<"Release "<<split_segments[i]<<endl;
+                    #endif
                 }
 
                 int max_height = GetMaxHeight();
@@ -1413,6 +1466,9 @@ class skiplist {
             for(int l = top_level;l>0;l--){
                 //not sure key > curr's key
                 curr = reinterpret_cast<Index*>(pred)->Next();
+                if(curr == nullptr){
+                    curr = nullptr;
+                }
                 RT_ASSERT(curr!=nullptr);
                 succ = reinterpret_cast<Index*>(curr)->Next();   
                 while(succ && succ->Key <= key){
@@ -1448,9 +1504,9 @@ class skiplist {
             //get the preds from [top_level,0)
             for(int l = top_level;l>0;l--){
                 //not sure key > curr's key
-                if(pred->isIndex == false){
-                    cerr<<"no";
-                }
+                // if(pred->isIndex == false){
+                //     cerr<<"no";
+                // }
                 RT_ASSERT(pred->isIndex);
                 curr = reinterpret_cast<Index*>(pred)->Next();
                 RT_ASSERT(curr!=nullptr);
@@ -1493,23 +1549,37 @@ class skiplist {
         }
 
         //skiplist add a key 
-        void Add(K key,V value){
+        void Add(K key,V value,long long &cascnt_acquire,long long &move_bottom,long long &split_block){
             SNode* preds[MaxLevel+1];
             for(int i =0;i<=MaxLevel;i++){
                 preds[i] = nullptr;
             }
             Segment_pt* locate = reinterpret_cast<Segment_pt*>(Scan(key,preds));
             while(true){
-                while(!locate->CASLock());
-                if(key >= locate->Key && key < locate->bound){
-                    // locate->Add()
-                    Add_key_in_Segment(key,value,preds,locate);
-                    return;
-                }else{
-                    Segment_pt* next = reinterpret_cast<Segment_pt*>(locate->Next());
-                    locate->ReleaseLock();
-                    locate = next;
+                if(key < locate->bound){
+                    #if DEBUG
+                    cerr<<"try to acquire"<<locate<<endl;
+                    #endif
+                    locate->ExclusiveLock();
+                    if(key < locate->bound){//key >= locate->Key && 
+                        Add_key_in_Segment(key,value,preds,locate);//will ReleaseExclusive
+                        // locate->ReleaseShared();
+                        return;
+                    }
+                    locate->ReleaseExclusive();
+                    #if DEBUG
+                    cerr<<"Release "<<locate<<endl;
+                    #endif
                 }
+                //skip 
+                // while(locate->ReadSplit());
+                SNode* next = locate->Next();
+                // locate->ReleaseShared();
+                while(next != locate->Next()){
+                    next = locate->Next();
+                }
+                locate = reinterpret_cast<Segment_pt*>(next);
+                
             }
             /*
             scan get segment_pt
@@ -1525,6 +1595,24 @@ class skiplist {
                 }
             }
             */	
+        }
+
+        void ShowSegmentNumber(){
+            Segment_pt* head_seg = nullptr;
+            SNode* pr_ = head_;
+            for(int i = MaxLevel;i>0;i--){
+                pr_ = reinterpret_cast<Index*>(pr_)->Down();
+            }
+            head_seg = reinterpret_cast<Segment_pt*>(pr_);
+            int cnt = 0;
+            SNode* cur = head_seg->Next();
+            while(cur->Key != UNINT_MAX){
+                string kk = to_string(cur->Key)+"\t"+to_string(reinterpret_cast<Segment_pt*>(cur)->bound)+"\t"+to_string(reinterpret_cast<Segment_pt*>(cur)->DataArray->size)+"\n";
+                write_into_file("./segment.csv",kk.c_str());
+                cnt++;
+                cur = cur->Next();
+            }
+            std::cout<<"SegmentNumber:"<<cnt<<std::endl;
         }
 
         int RandLevel(){
