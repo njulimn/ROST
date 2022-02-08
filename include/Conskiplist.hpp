@@ -1193,6 +1193,8 @@ class skiplist {
         }
 
         bool SplitSegment(Segment_pt *root,SNode** preds,K *_keys,int*  _values,int _size,K _start,K _stop){
+            //1. partition array
+
             int st = 0,ed =0;//the rank of the first/last+1 ele of one segment
             GreedyPLR* plr = new GreedyPLR(gamma);
             vector<Segment*> seg;
@@ -1229,14 +1231,15 @@ class skiplist {
                 }
             }
 
+            //2. generate segments group
             int seg_size = static_cast<int>(seg.size());
             // std::cout<<"split seg_size "<<seg_size<<std::endl;
             // int to_level = root->level;
             //create new segment and index
             vector<Segment_pt*> split_segments(seg_size);//store the all segment_pt
-            vector<SNode*> SNode_inner_pred(MaxLevel+1,nullptr);
-            vector<SNode*> SNode_left(MaxLevel+1,nullptr);
-            vector<SNode*> SNode_right(MaxLevel+1,nullptr);
+            vector<SNode*> SNode_inner_pred(MaxLevel+1,nullptr);//段group当前右边界
+            vector<SNode*> SNode_left(MaxLevel+1,nullptr);//段group左边界
+            vector<SNode*> SNode_right(MaxLevel+1,nullptr);//段group右边界
             // Segment_pt* split_split_segments_pred = nullptr;
             // vector<Index*> split_indexes(seg_size-1);
             // vector<Index*> indexes_inner_pred(MaxLevel,nullptr);
@@ -1249,14 +1252,14 @@ class skiplist {
             for(int i = 0;i<seg_size;i++){
                 int height_tmp=1,ed,st=segment_stIndex[i];
                 unsigned int base,bound;
-                //set height_tmp,base
+                //2.1 set height_tmp,base
                 if(i == 0){
                     base = _start;
                 }else{
                     height_tmp = height_seq[i-1];
                     base  = _keys[st];
                 }
-                //set bound,ed
+                //2.2 set bound,ed
                 if(i == seg_size-1){
                     bound = _stop;
                     ed = _size;
@@ -1266,7 +1269,7 @@ class skiplist {
                 }
                 
                 RT_ASSERT(ed-st>0);
-                //rebuild subtree
+                //2.3 rebuild subtree
                 subtree* new_subtree = nullptr;
                 if(ed-st == 1){
                     new_subtree = build_tree_none(base,bound);
@@ -1285,36 +1288,31 @@ class skiplist {
                         new_subtree = rebuild_tree(_keys+st,_values+st,ed-st,base,bound);//,true,seg[i]->slope,seg[i]->intercept);
                 }
 
-                //create segment ,index without data and link inner part
+                //2.4 create segment ,index without data and link inner part
                 SNode* next_seg = nullptr;//the bottom segment_pt
                 // SNode* top_index = nullptr;//the top level of index
                 vector<SNode*> SNodeArray(height_tmp+1,nullptr);
                 if(i){
+                    //2.4.1 create index array(stored in SNodeArray) with subtree
                     NewIndexArrayWithData(height_tmp,base,bound,new_subtree,SNodeArray);
-                    // top_index = NewIndexArrayWithData(height_tmp,base,bound,new_subtree,SNodeArray);
                     next_seg = SNodeArray[0];
-                    // next_seg = NewSegment_pt(base,bound,height_tmp,nullptr);//NewSegment_pt_nodata(base,bound);
-                    // next_seg->split = 1;
-                    split_segments[i] = reinterpret_cast<Segment_pt*>(next_seg);
+                    split_segments[i] = reinterpret_cast<Segment_pt*>(next_seg);//store segment in split_segments
                     // Acquire(next_seg);
                     #if DEBUG
                     cerr<<"try to next_seg"<<next_seg<<endl;
                     #endif
-                    reinterpret_cast<Segment_pt*>(next_seg)->ExclusiveLock();
-                    // RT_ASSERT(reinterpret_cast<Segment_pt*>(next_seg)->CASLock());
-                    RT_ASSERT(reinterpret_cast<Segment_pt*>(next_seg)->CASSplit());
-                    // top_index = NewIndexWithSeg(height_tmp,base,next_seg);
-                    // split_indexes[i-1] = top_index;
+                    reinterpret_cast<Segment_pt*>(next_seg)->ExclusiveLock();//make segment unchangeable:不能被插入，不能被group外的segment连接
+                    RT_ASSERT(reinterpret_cast<Segment_pt*>(next_seg)->CASSplit());//make segment inseparable
 
-                    //link segment_pt
-                    if(SNode_inner_pred[0]){//if pre_segment exsits
+                    //2.5.1 link segment_pt if pre_segment exsits
+                    if(SNode_inner_pred[0]){
                         reinterpret_cast<Segment_pt*>(SNode_inner_pred[0])->SetNext(next_seg);//no need to loop   
                     }
                     SNode_inner_pred[0] = next_seg;
                     if(i == 1)
                         SNode_left[0] = next_seg;
                     SNode_right[0] = next_seg;
-                    //link the above index
+                    //2.5.2 link [height_tmp,0) index if pre_segment exsits
                     for(int l = height_tmp;l>0;l--){
                         SNode* pr_ = SNodeArray[l];//get the l level index 
                         // reinterpret_cast<Index*>(pr_)->SetNext(nullptr);//this step finished in NewIndexArrayWithData  function
@@ -1326,7 +1324,6 @@ class skiplist {
                             SNode_left[l] = pr_;
                         }
                         SNode_right[l] = pr_;
-                        // pr_ = reinterpret_cast<Index*>(pr_)->Down();
                     }
 
                 }else{
@@ -1342,11 +1339,11 @@ class skiplist {
                 root->ReleaseExclusive();
                 return true;
             }else{
-                //link the bottom(segment_pt)
-                reinterpret_cast<Segment_pt*>(SNode_right[0])->SetNext(root->Next());
+                //2.6 link the bottom(segment_pt)
+                reinterpret_cast<Segment_pt*>(SNode_right[0])->SetNext(root->Next());//the right link
                 // split_segments[seg_size-1]->SetNext(root->Next());
-                root->SetNext(SNode_left[0]);//split_segments[1]
-                //update root
+                root->SetNext(SNode_left[0]);//the left link
+                //2.7 update root(segment_pt)
                 root->bound = split_lower_bound;
                 root->DataArray = root_dataarray;
                 root->ReleaseSplit();
@@ -1354,14 +1351,14 @@ class skiplist {
                 #if DEBUG
                 cerr<<"Release "<<root<<endl;
                 #endif
-                //release the write lock of the new segment
+                //2.8 release the write lock of the new segment
                 for(int i = 1;i<seg_size;i++){
                     split_segments[i]->ReleaseExclusive();
                     #if DEBUG
                     cerr<<"Release "<<split_segments[i]<<endl;
                     #endif
                 }
-
+                //2.9 update maxheight
                 int max_height = GetMaxHeight();
                 while (segment_max_height > max_height) {
                     if (max_height_.compare_exchange_weak(max_height, segment_max_height)) {
@@ -1371,7 +1368,7 @@ class skiplist {
                     }
                 }
 
-                //insert index
+                //2.10 insert index from 1 to segment_max_height, reusing the information of preds array 
                 SNode *pred = nullptr;
                 SNode *curr = nullptr;
                 SNode *succ = nullptr;
@@ -1392,7 +1389,7 @@ class skiplist {
                         reinterpret_cast<Index*>(pred)->AppendNext(SNode_left[i],SNode_right[i]);
                     }
                 }
-                
+                //2.11 release the split locks of segment group 
                 for(int i = 1;i<seg_size;i++){
                     split_segments[i]->ReleaseSplit();
                 }
@@ -1489,38 +1486,39 @@ class skiplist {
 
         //for Add,preds[0,MaxLevel]
         SNode* Scan(K key, SNode* preds[]){
-            SNode* ppred = nullptr;
+            // SNode* ppred = nullptr;
             SNode* pred = head_;
             SNode* curr = nullptr;
             SNode* succ = nullptr;
             SNode* locate = nullptr;
-            int top_level = GetMaxHeight();
+            int top_level = GetMaxHeight();//获取此时最高的index高度
             //down
+            //获取[MaxLevel,top_level)区间高度的前驱，即为head_的不同高度的index
             for(int l = MaxLevel;l>top_level;l--){
                 preds[l] = pred;
-                ppred = pred;
+                // ppred = pred;
                 pred = reinterpret_cast<Index*>(pred)->Down();
             }
+
             //get the preds from [top_level,0)
-            for(int l = top_level;l>0;l--){
+            for(int l = top_level;l>0;l--){//0 是因为 每个底层节点保证一定有一层index
                 //not sure key > curr's key
-                // if(pred->isIndex == false){
-                //     cerr<<"no";
-                // }
                 RT_ASSERT(pred->isIndex);
-                curr = reinterpret_cast<Index*>(pred)->Next();
+                curr = reinterpret_cast<Index*>(pred)->Next();//pred右侧index
                 RT_ASSERT(curr!=nullptr);
-                succ = reinterpret_cast<Index*>(curr)->Next();   
-                while(succ && succ->Key <= key){
-                    ppred = pred;
+                succ = reinterpret_cast<Index*>(curr)->Next();//curr右侧index
+                while(succ && succ->Key <= key){//只有succ的左边界(key) 不超过 当前key时，pred右移
+                    // ppred = pred;
                     pred = curr;
                     curr = succ;
                     succ = reinterpret_cast<Index*>(succ)->Next();
                 }
                 
+                //case1 pred <= key < curr ;
+                //case2 pred < curr <= key < succ
                 if(key >= curr->Key){
-                    //key is bwtween curr and succ
-                    ppred = pred;
+                    //key is bwtween curr and succ,case 2
+                    // ppred = pred;
                     pred = curr;//curr != tail_
                 }
                 // else{
@@ -1533,11 +1531,11 @@ class skiplist {
                 //     }
                 // }
                 preds[l] = pred;
-                ppred = pred;
-                pred = reinterpret_cast<Index*>(pred)->Down();
+                // ppred = pred;
+                pred = reinterpret_cast<Index*>(pred)->Down();//当l = 1时，pred更新为底层节点
             }
             //return segment_pt
-            locate = pred;//reinterpret_cast<Seg*>(pred)->Down();
+            locate = pred;
             preds[0] = locate;
             return locate;
         }
@@ -1556,10 +1554,10 @@ class skiplist {
             }
             Segment_pt* locate = reinterpret_cast<Segment_pt*>(Scan(key,preds));
             while(true){
-                if(key < locate->bound){
-                    #if DEBUG
+                if(key < locate->bound){//locate可能由于split，bound缩小了，需要跳过
+#if DEBUG
                     cerr<<"try to acquire"<<locate<<endl;
-                    #endif
+#endif
                     locate->ExclusiveLock();
                     if(key < locate->bound){//key >= locate->Key && 
                         Add_key_in_Segment(key,value,preds,locate);//will ReleaseExclusive
@@ -1574,27 +1572,14 @@ class skiplist {
                 //skip 
                 // while(locate->ReadSplit());
                 SNode* next = locate->Next();
-                // locate->ReleaseShared();
-                while(next != locate->Next()){
-                    next = locate->Next();
-                }
+                //split时，底层是先连接后面的段，然后才改变第一个段的bound
+                //可能出现locate的next在这两步被改的情况，如[2,10) [5,8) [8,10)
+                //但key 一定大于第一个段分裂前的bound，因此直接取其next即可
+                // while(next != locate->Next()){
+                //     next = locate->Next();
+                // }
                 locate = reinterpret_cast<Segment_pt*>(next);
-                
-            }
-            /*
-            scan get segment_pt
-            while(true){
-                while(!locate->Acquirelock());
-                if(key is in locate){
-                    locate->Add()
-                    break;
-                }else{
-                    next = locate's next;
-                    locate->Release();
-                    locate = next;
-                }
-            }
-            */	
+            }	
         }
 
         void ShowSegmentNumber(){
