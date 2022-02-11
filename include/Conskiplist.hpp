@@ -17,6 +17,7 @@
 #include <assert.h>
 #include <random>
 #include <mutex>
+#include <condition_variable>
 #include <shared_mutex>
 
 #define PREFETCH(addr, rw, locality) __builtin_prefetch
@@ -40,6 +41,8 @@ typedef uint8_t bitmap_t;
 #define Gm 64
 #define MAX_DEPTH 6
 #define WRITESEG 0
+#define DETA_INSERT 1000
+#define SEMA_DEBUG 1
 
 // runtime assert
 #define RT_ASSERT(expr) \
@@ -337,6 +340,109 @@ public:
 template<class K, class V>
 class skiplist {
     public:
+        class Semaphore {
+        public:
+            explicit Semaphore(int count = 0) : count_(count) {
+            }
+            //for deta_inserts V
+            void SignalAll(int id=0){
+                std::unique_lock<std::mutex> lock(mutex_);
+                count_=DETA_INSERT;
+                #if SEMA_DEBUG
+                std::cout<<"thread "<<id<<" notify all"<<std::endl;
+                #endif
+                cv_.notify_all();
+            }
+
+            void SignalOne(int id=0){
+                std::unique_lock<std::mutex> lock(mutex_);
+                count_ = 1;
+                #if SEMA_DEBUG
+                std::cout<<"thread "<<id<<" notify one blocked thread"<<std::endl;
+                #endif
+                cv_.notify_one();
+            }
+            
+            //    void SignalBatch(int id){
+            //    	std::cout<<"thread "<<id<<" try to notify 4threads"<<std::endl;
+            //    	for(int i = 0;i<5;i++){
+            //            ++count_;
+            //            if (count_ <= 0)
+            //            	cv_.notify_one();//由于count_，存在唤醒问题
+            //        }
+            //	}
+        
+            //useless,just a template
+            // void Signal(int id) {
+            //     std::unique_lock<std::mutex> lock(mutex_);
+            //     ++count_;
+            //     if (count_ <= 0)
+            //         cv_.notify_one();
+            // }
+
+            //for deta_inserts P,当count_<0时，应该循环被挂起，返回值一定为非负数
+            int Wait(int id=0) {
+                std::unique_lock<std::mutex> lock(mutex_);
+                --count_;
+                while(count_ < 0){
+                     #if SEMA_DEBUG
+                    std::cout<<"thread "<<id<<" ->wait"<<" state:"<<count_<<std::endl;
+                    #endif
+                    cv_.wait(lock);
+                     #if SEMA_DEBUG
+                    std::cout<<"thread "<<id<<" ->wake up"<<std::endl;
+                    #endif
+                    --count_;
+                }
+                #if SEMA_DEBUG
+                std::cout<<"thread "<<id<<" state:"<<count_<<std::endl; 
+                #endif
+                return count_; 
+            }
+
+            //for work threads
+            void AddWork(int id=0){
+                std::unique_lock<std::mutex> lock(mutex_);
+                ++count_;
+                 #if SEMA_DEBUG
+                std::cout<<"thread "<<id<<" work"<<std::endl;
+                #endif
+            }
+            //for work threads V
+            void SignalWork(int id=0){
+                std::unique_lock<std::mutex> lock(mutex_);
+                --count_;
+                 #if SEMA_DEBUG
+                std::cout<<"thread "<<id<<" finish"<<std::endl;
+                #endif
+                if (count_ == 0){
+                     #if SEMA_DEBUG
+                    std::cout<<"thread "<<id<<" notify_one"<<std::endl;
+                    #endif
+                    cv_.notify_one();
+                }
+            }
+            //for work threads P
+            void WaitWork(int id=0){
+                std::unique_lock<std::mutex> lock(mutex_);
+                --count_;
+                if(count_>0){
+                     #if SEMA_DEBUG
+                    std::cout<<"rebuild thread "<<id<<" wait working threads"<<std::endl;
+                    #endif
+                    cv_.wait(lock);
+                }
+                #if SEMA_DEBUG
+                std::cout<<"rebuild thread "<<id<<" start rebuild"<<std::endl;
+                #endif
+            }
+            
+
+        private:
+            std::mutex mutex_;
+            std::condition_variable cv_;
+            int count_;
+        };
         struct node{
             K key;
             V value;
@@ -431,8 +537,11 @@ class skiplist {
             mutable std::shared_mutex write;//TODO:
             // std::atomic<bool> write;//false means segment is locked
             std::atomic<bool> spliting;//true means segment is spliting
+            Semaphore deta_inserts;//从上一次build/split后insert的个数
+            Semaphore work_threads;//当前在本段(及其子树)的读写线程数
 
-            Segment_pt(K base,K bnd,int lvl):SNode(base,false),bound(bnd),level(lvl),write(shared_mutex()){}       
+            Segment_pt(K base,K bnd,int lvl):SNode(base,false),bound(bnd),level(lvl),write(shared_mutex()),
+            deta_inserts(Semaphore(DETA_INSERT)),work_threads(Semaphore(0)){}       
 
             // inline void InitLock(){
             //     write.store(true, std::memory_order_release);
@@ -503,7 +612,10 @@ class skiplist {
             }
 
             std::pair<bool,V> Lookup(K key){
-                return DataArray->find_key_in_subtree(key);
+                this->work_threads.AddWork();
+                std::pair<bool,V> res = DataArray->find_key_in_subtree(key);
+                this->work_threads.SignalWork();
+                return res;
             }
         };
         struct Index: SNode{
@@ -1141,14 +1253,16 @@ class skiplist {
         //--------------------------segment_pt insert operation--------------------------//
 
         //add a key-value into segment_pt
-        void Add_key_in_Segment(K key,V value,SNode** preds,Segment_pt* locate){
+        void Add_key_in_Segment(K key,V value,SNode** preds,Segment_pt* locate,int state){
             subtree* path[MAX_DEPTH*2];
             int path_size = 0;
             insert_subtree(locate,key,value,path,path_size);
             subtree *n = locate->DataArray;
             const int ESIZE = n->size;
-            const bool need_rebuild = path_size >= MAX_DEPTH ;//|| ESIZE > segment_max_size ;
+            const bool need_rebuild = state == 0;//path_size >= MAX_DEPTH ;//|| ESIZE > segment_max_size ;
             if(!need_rebuild){
+                //结束插入不需要修改deta_inserts
+                locate->work_threads.SignalWork();//working threads number --
                 locate->ReleaseExclusive();
                 #if DEBUG
                     cerr<<"Release "<<locate<<endl;
@@ -1163,6 +1277,7 @@ class skiplist {
                     #endif
                     return;
                 }
+                locate->work_threads.WaitWork();//wait working threads before this
                 unsigned int* keys = new unsigned int[ESIZE];
                 int* values = new int[ESIZE];
                 unsigned int n_start = n->start,n_stop = n->stop;
@@ -1173,6 +1288,8 @@ class skiplist {
                 if((res.first < linearity )|| ESIZE >segment_max_size){
                     if(SplitSegment(locate,preds,keys,values,ESIZE,n_start,n_stop)){
                         //SplitSegment already released the write lock of locate
+                        //TODO:deta_inserts
+                        locate->deta_inserts.SignalAll();//wake up blocked threads
                         delete[] keys;
                         delete[] values;  
                         return;
@@ -1182,6 +1299,8 @@ class skiplist {
                 locate->DataArray = newsubtree;
                 locate->ReleaseSplit();
                 locate->ReleaseExclusive();
+
+                locate->deta_inserts.SignalAll();//wake up blocked threads
                 #if DEBUG
                     cerr<<"Release "<<locate<<endl;
                 #endif
@@ -1558,13 +1677,18 @@ class skiplist {
 #if DEBUG
                     cerr<<"try to acquire"<<locate<<endl;
 #endif
+                    int state = locate->deta_inserts.Wait();
                     locate->ExclusiveLock();
-                    if(key < locate->bound){//key >= locate->Key && 
-                        Add_key_in_Segment(key,value,preds,locate);//will ReleaseExclusive
-                        // locate->ReleaseShared();
+                    if(key < locate->bound){
+                        locate->work_threads.AddWork();
+                        Add_key_in_Segment(key,value,preds,locate,state);//will ReleaseExclusive and finish operations on deta_inserts and work_threads
                         return;
                     }
                     locate->ReleaseExclusive();
+                    if(state == 0)//由于刚好前面的线程对locate进行了rebuild/split，本该当前线程notify all，现在要执行SignalOne再skip
+                        locate->deta_inserts.SignalOne();//deta_insert=1 and wake up one blocked thread to do split/rebuild 
+                                                        //which will notify the other threads 
+                    //其他情况state > 0，可以乐观的认为插了一个重复的键，这里不做其他处理
                     #if DEBUG
                     cerr<<"Release "<<locate<<endl;
                     #endif
