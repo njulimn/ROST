@@ -353,7 +353,7 @@ class skiplist {
                 #endif
                 cv_.notify_all();
             }
-
+            //for deta_inserts V
             void SignalOne(int id=0){
                 std::unique_lock<std::mutex> lock(mutex_);
                 count_ = 1;
@@ -479,7 +479,7 @@ class skiplist {
             int is_two = 0; // is special node for only two keys
             int build_size = 0; // tree size (include sub nodes) when node created
             int size = 0; // current tree size (include sub nodes)
-            int fixed = 0; // fixed node will not trigger rebuild
+            // int fixed = 0; // fixed node will not trigger rebuild
             int num_inserts = 0, num_insert_to_data = 0;
             // int child_ptr = 0;
             int num_items = 0; // size of items
@@ -612,10 +612,7 @@ class skiplist {
             }
 
             std::pair<bool,V> Lookup(K key){
-                this->work_threads.AddWork();
-                std::pair<bool,V> res = DataArray->find_key_in_subtree(key);
-                this->work_threads.SignalWork();
-                return res;
+                return DataArray->find_key_in_subtree(key);
             }
         };
         struct Index: SNode{
@@ -842,7 +839,7 @@ class skiplist {
             n->is_two = 0;
             n->build_size = 0;
             n->size = 0;
-            n->fixed = 0;
+            // n->fixed = 0;
             // n->child_ptr = 0;
             n->num_inserts = n->num_insert_to_data = 0;
             n->num_items = 1;
@@ -864,7 +861,7 @@ class skiplist {
             n->is_two = 0;
             n->build_size = 0;
             n->size = 0;
-            n->fixed = 0;
+            // n->fixed = 0;
             // n->child_ptr = 0;
             n->num_inserts = n->num_insert_to_data = 0;
             n->num_items = 1;
@@ -894,7 +891,7 @@ class skiplist {
             n->is_two = 1;
             n->build_size = 2;
             n->size = 2;
-            n->fixed = 0;
+            // n->fixed = 0;
             // n->child_ptr = 0;
             n->num_inserts = n->num_insert_to_data = 0;
             n->num_items = 32;//8
@@ -994,7 +991,7 @@ class skiplist {
                     n->is_two = 0;
                     n->build_size = size;
                     n->size = size;
-                    n->fixed = 0;
+                    // n->fixed = 0;
                     n->num_inserts = n->num_insert_to_data = 0;
                 if(plr && lvl == 1){
                     n->num_items = size;
@@ -1029,10 +1026,9 @@ class skiplist {
                 }        
                     RT_ASSERT(n->slope >= 0);
 
-                    //TODO:fix size?
-                    if (size > 1e5) {
-                        n->fixed = 1;
-                    }
+                    // if (size > 1e5) {
+                    //     n->fixed = 1;
+                    // }
 
                     n->items = new_items(n->num_items);
                     memset(n->items,0,n->num_items);
@@ -1288,7 +1284,6 @@ class skiplist {
                 if((res.first < linearity )|| ESIZE >segment_max_size){
                     if(SplitSegment(locate,preds,keys,values,ESIZE,n_start,n_stop)){
                         //SplitSegment already released the write lock of locate
-                        //TODO:deta_inserts
                         locate->deta_inserts.SignalAll();//wake up blocked threads
                         delete[] keys;
                         delete[] values;  
@@ -1661,8 +1656,23 @@ class skiplist {
 
         //skiplist lookup a key
         std::pair<int,V> Lookup(K key){
-            SNode* root = Scan(key);
-            return reinterpret_cast<Segment_pt*>(root)->Lookup(key);
+            Segment_pt* locate = reinterpret_cast<Segment_pt*>(Scan(key));
+            while(true){
+                int state = locate->deta_inserts.Wait();
+                if(key < locate->bound){
+                    locate->work_threads.AddWork();
+                    //TODO:to check read thread中该部分应该在lookup结束后，还是addwork结束与lookup之间
+                    if(state == 0)
+                        locate->deta_inserts.SignalOne();//避免threads一直无法被唤醒
+                    std::pair<int,V> res = locate->Lookup(key);
+                    return res;
+                }
+                if(state == 0)//同Add中对应code
+                    locate->deta_inserts.SignalOne();
+                //skip
+                locate = reinterpret_cast<Segment_pt*>(locate->Next());
+            }
+            return {-1,0};
         }
 
         //skiplist add a key 
@@ -1685,7 +1695,8 @@ class skiplist {
                         return;
                     }
                     locate->ReleaseExclusive();
-                    if(state == 0)//由于刚好前面的线程对locate进行了rebuild/split，本该当前线程notify all，现在要执行SignalOne再skip
+                    //TODO:这里选择SignalOne还是SignalAll需要check
+                    if(state == 0)//由于刚好前面的线程对locate进行了rebuild/split，本该当前线程notify all，现在要执行SignalOne再skip,
                         locate->deta_inserts.SignalOne();//deta_insert=1 and wake up one blocked thread to do split/rebuild 
                                                         //which will notify the other threads 
                     //其他情况state > 0，可以乐观的认为插了一个重复的键，这里不做其他处理
