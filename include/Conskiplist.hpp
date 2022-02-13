@@ -43,6 +43,7 @@ typedef uint8_t bitmap_t;
 #define WRITESEG 0
 #define DETA_INSERT 1000
 #define SEMA_DEBUG 1
+#define IsREAD_THREAD 1
 
 // runtime assert
 #define RT_ASSERT(expr) \
@@ -380,19 +381,29 @@ class skiplist {
             //         cv_.notify_one();
             // }
 
-            //for deta_inserts P,当count_<0时，应该循环被挂起，返回值一定为非负数
-            int Wait(int id=0) {
+            //for deta_inserts,当count_<0时，应该循环被挂起，返回值一定为非负数
+            int Wait(int read_thread = 0,int id=0) {
                 std::unique_lock<std::mutex> lock(mutex_);
                 --count_;
                 while(count_ < 0){
                      #if SEMA_DEBUG
                     std::cout<<"thread "<<id<<" ->wait"<<" state:"<<count_<<std::endl;
                     #endif
-                    cv_.wait(lock);
+                    cv_.wait(lock);//只有收到notify信号才会结束wait
                      #if SEMA_DEBUG
                     std::cout<<"thread "<<id<<" ->wake up"<<std::endl;
                     #endif
                     --count_;
+                }
+                //从wait到--count，一定是notify all，所有相应的线程被唤醒，轮到本线程执行
+                //--count后其他线程应该仍阻塞，因此当读线程执行++count，读线程只会被写线程阻塞，但不会使得写线程的count<0，令写线程在该信号量下被阻塞
+                if(read_thread){// && count_ == 0
+                    ++count_;
+                    if(count_ == 1) 
+                        cv_.notify_one();//读线程执行到此，一种是没进入while【当前没有blocked的线程，没必要notify_one】
+                                        //一种可能是notify all的唤醒的【当前没有blocked的线程，没必要notify one】
+                                        //一种是notify_one唤醒的【可能被state=0的误入写线程，可能被state=0的误入写线程唤醒的state=1的读线程唤醒】
+                                        //由于无法区别以上情况，统一notify_one,因此可能会notify 空
                 }
                 #if SEMA_DEBUG
                 std::cout<<"thread "<<id<<" state:"<<count_<<std::endl; 
@@ -1255,7 +1266,7 @@ class skiplist {
             insert_subtree(locate,key,value,path,path_size);
             subtree *n = locate->DataArray;
             const int ESIZE = n->size;
-            const bool need_rebuild = state == 0;//path_size >= MAX_DEPTH ;//|| ESIZE > segment_max_size ;
+            const bool need_rebuild = ( state == 0);//path_size >= MAX_DEPTH ;//|| ESIZE > segment_max_size ;
             if(!need_rebuild){
                 //结束插入不需要修改deta_inserts
                 locate->work_threads.SignalWork();//working threads number --
@@ -1658,17 +1669,18 @@ class skiplist {
         std::pair<int,V> Lookup(K key){
             Segment_pt* locate = reinterpret_cast<Segment_pt*>(Scan(key));
             while(true){
-                int state = locate->deta_inserts.Wait();
+                int state = locate->deta_inserts.Wait(IsREAD_THREAD);
                 if(key < locate->bound){
                     locate->work_threads.AddWork();
-                    //TODO:to check read thread中该部分应该在lookup结束后，还是addwork结束与lookup之间
-                    if(state == 0)
-                        locate->deta_inserts.SignalOne();//避免threads一直无法被唤醒
+                    // //TODO:to check read thread中该部分应该在lookup结束后，还是addwork结束与lookup之间
+                    // if(state == 0)
+                    //     locate->deta_inserts.SignalOne();//避免threads一直无法被唤醒
                     std::pair<int,V> res = locate->Lookup(key);
+                    locate->work_threads.SignalWork();
                     return res;
                 }
-                if(state == 0)//同Add中对应code
-                    locate->deta_inserts.SignalOne();
+                // if(state == 0)//同Add中对应code
+                //     locate->deta_inserts.SignalOne();
                 //skip
                 locate = reinterpret_cast<Segment_pt*>(locate->Next());
             }
@@ -1687,15 +1699,19 @@ class skiplist {
 #if DEBUG
                     cerr<<"try to acquire"<<locate<<endl;
 #endif
+                    /*
+                    从if 到Wait之间可能异常的情况：
+					1.locate刚好split结束，边界值变化了，需要skip，只能先deta_inserts.Wait，然后判断locate边界， 
+					2.前面有线程要对locate进行split操作，但还未结束，这时，Wait会使得本线程挂起 
+					*/
                     int state = locate->deta_inserts.Wait();
                     locate->ExclusiveLock();
-                    if(key < locate->bound){
+                    if(key < locate->bound){ 
                         locate->work_threads.AddWork();
                         Add_key_in_Segment(key,value,preds,locate,state);//will ReleaseExclusive and finish operations on deta_inserts and work_threads
                         return;
                     }
                     locate->ReleaseExclusive();
-                    //TODO:这里选择SignalOne还是SignalAll需要check
                     if(state == 0)//由于刚好前面的线程对locate进行了rebuild/split，本该当前线程notify all，现在要执行SignalOne再skip,
                         locate->deta_inserts.SignalOne();//deta_insert=1 and wake up one blocked thread to do split/rebuild 
                                                         //which will notify the other threads 
