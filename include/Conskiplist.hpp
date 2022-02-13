@@ -771,6 +771,30 @@ class skiplist {
         }
 
         void insert_subtree(Segment_pt* root,K key,V value,subtree* path[],int &path_size){
+            /*
+            几个变量：state(指示数组某位状态,empty element pointer),expected(第一次访问时数组某位的值),newvalue(数组某位期望修改的值)
+            获取state和expected 为原子性的
+            修改state，expected为newvalue为原子性的
+            insert solution:
+            step1.  Get(address,state,expected)
+            step2.  if(state == empty)
+                        try to CAS(address,old_state,expected,new_state,newvalue)
+                        if CAS failed, then go to step1
+                        else
+                            atomic add subtree size
+                            insert finish
+                    else if(state == element)
+                        calculate newvalue
+                        try to CAS(address,old_state,expected,new_state,newvalue)
+                        if CAS failed, then go to step1
+                        else
+                            atomic add subtree size
+                            insert finish
+                    else//state = pointer 
+                        go to next layer
+
+            problem:how to make state as atomic ,and Get CAS how to accomplish      
+            */
             int insert_to_data = 0;
             subtree* n = root->DataArray;
             while(1){
