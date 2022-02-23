@@ -42,7 +42,7 @@ typedef uint8_t bitmap_t;
 #define Gm 64
 #define MAX_DEPTH 6
 #define WRITESEG 0
-#define DETA_INSERT 50000
+#define DETA_INSERT 50000//该值设定不可过小
 #define SEMA_DEBUG 0
 #define MICROLOCK_DEBUG 0
 #define IsREAD_THREAD 1
@@ -350,8 +350,9 @@ class skiplist {
     public:
         class Semaphore {
         public:
-            explicit Semaphore(int count = 2) : count_(count) {
+            explicit Semaphore(int count = 2) : count_(count),work_(0) {
             }
+            ~Semaphore(){}
             //for deta_inserts V
             void SignalAll(int id=0){
                 std::unique_lock<std::mutex> lock(mutex_);
@@ -398,51 +399,59 @@ class skiplist {
                 #if SEMA_DEBUG
                 std::cout<<"thread "<<id<<" state:"<<count_<<std::endl; 
                 #endif
+                std::unique_lock<std::mutex> lock_(mutex_w);
+                ++work_;
                 return count_; 
             }
 
             //for work threads
             void AddWork(int id=0){
-                std::unique_lock<std::mutex> lock(mutex_);
-                ++count_;
+                std::unique_lock<std::mutex> lock(mutex_w);
+                ++work_;
                  #if SEMA_DEBUG
                 std::cout<<"thread "<<id<<" work"<<std::endl;
                 #endif
             }
             //for work threads V
             void SignalWork(int id=0){
-                std::unique_lock<std::mutex> lock(mutex_);
-                --count_;
+                std::unique_lock<std::mutex> lock(mutex_w);
+                --work_;
                  #if SEMA_DEBUG
                 std::cout<<"thread "<<id<<" finish"<<std::endl;
                 #endif
-                if (count_ == 0){
+                if (work_ == 0){
                      #if SEMA_DEBUG
                     std::cout<<"thread "<<id<<" notify_one to work"<<std::endl;
                     #endif
-                    cv_.notify_one();
+                    cv_w.notify_one();
                 }
             }
             //for work threads P
             void WaitWork(int id=0){
-                std::unique_lock<std::mutex> lock(mutex_);
-                --count_;
-                if(count_>0){
+                std::unique_lock<std::mutex> lock(mutex_w);
+                --work_;
+                if(work_>0){
                      #if SEMA_DEBUG
                     std::cout<<"rebuild thread "<<id<<" wait working threads"<<std::endl;
                     #endif
-                    cv_.wait(lock);
+                    // std::cout<<"wait to rebuild\n";
+                    cv_w.wait(lock);
+                }
+                if(work_ == 0){
+                    work_ = 1;
                 }
                 #if SEMA_DEBUG
                 std::cout<<"rebuild thread "<<id<<" start rebuild"<<std::endl;
                 #endif
             }
             
-
         private:
             std::mutex mutex_;
             std::condition_variable cv_;
             int count_;
+            std::mutex mutex_w;
+            std::condition_variable cv_w;
+            int work_;
         };
         struct node{
             K key;
@@ -488,10 +497,9 @@ class skiplist {
             double slope = 0,intercept = 0;
             K start = UNINT_MAX,stop=UNINT_MAX;
             Item* items = nullptr;
-            MicroLock* mlock = nullptr;;
+            MicroLock* mlock = nullptr;
             bitmap_t* none_bitmap = nullptr; // 1 means None, 0 means Data or Child
             bitmap_t* child_bitmap = nullptr; // 1 means Child. will always be 0 when none_bitmap is 1
-            
             
             inline int predict(K key){
                 double v = this->slope * (static_cast<long double>(key)-static_cast<long double>(this->start)) + this->intercept;
@@ -509,16 +517,17 @@ class skiplist {
 
             std::pair<bool,V> find_key_in_subtree(K key){
                 subtree* n = this;
-                // vector<subtree*> paths;
-                // vector<int> poss;
+                vector<subtree*> paths;
+                vector<int> poss;
                 int pos = n->predict(key);
                 n->LockItem(pos);
                 while(1){
-                    // paths.push_back(n);
+                    paths.push_back(n);
                     // int pos = n->predict(key);
-                    // poss.push_back(pos);
+                    poss.push_back(pos);
                     if (BITMAP_GET(n->none_bitmap, pos) == 1) {
                         //checkTypeEqualNull
+                        std::cout<<"the pos is null "<<n->items[pos].comp.data.key<<std::endl;
                         n->ReleaseItem(pos);
                         break;
                         // return {false,0};
@@ -526,6 +535,9 @@ class skiplist {
                     else if(BITMAP_GET(n->child_bitmap, pos) == 0){
                         //checkTypeEqualData
                         bool res_1 = n->items[pos].comp.data.key == key;
+                        if(!res_1){
+                            std::cout<<"the pos is the other key"<<n->items[pos].comp.data.key<<std::endl;
+                        }
                         V res_2 = n->items[pos].comp.data.value;
                         n->ReleaseItem(pos);
                         return {res_1,res_2};
@@ -546,18 +558,19 @@ class skiplist {
 
             //for reader thread to get the lock of n->items[pos]
             inline void LockItem(int n){
-                while(this->mlock[n].try_lock() == false){;}
-                // this->mlock[n].lock();
+                while(this->mlock->try_lock() == false){;}
+                // this->mlock->lock();
             }
 
             //for reader thread to release the lock of n->items[pos]
             inline void ReleaseItem(int n){
-                this->mlock[n].unlock();
+                this->mlock->unlock();
             }
+           
             //for writer thread to atomically get the state and value of n->items[pos], atomic through the microlock
             void GetStateItem(int n,int &state,Item &raw_item){
             //state 0:empty 1:element 2:subtree
-                while(this->mlock[n].try_lock() == false){;}
+                while(this->mlock->try_lock() == false){;}
                 #if MICROLOCK_DEBUG
                 std::cout<<this<<"\t"<<n<<"\tlock"<<std::endl;
                 #endif
@@ -567,20 +580,18 @@ class skiplist {
 
             //for writer thread to atomically change the state and value of n->items[pos], atomic through the microlock
             bool CASStateItem(int n,int &raw_state,Item &raw_item,int new_state,Item &new_item){
-                // if(this->mlock[n].try_lock()){
+                // if(this->mlock->try_lock()){
                     #if MICROLOCK_DEBUG
                     std::cout<<this<<"\t"<<n<<"\tlock"<<std::endl;
                     #endif
                     int real_state = BITMAP_GET(this->none_bitmap, n) == 1?0:BITMAP_GET(this->child_bitmap, n)+1;
                     if(raw_state != real_state){
-                        this->mlock[n].unlock();
                         #if MICROLOCK_DEBUG
                         std::cout<<this<<"\t"<<n<<"\tunlock"<<std::endl;
                         #endif
                         return false;
                     }
                     if(this->items[n].comp.child != raw_item.comp.child){
-                        this->mlock[n].unlock();
                         #if MICROLOCK_DEBUG
                         std::cout<<this<<"\t"<<n<<"\tunlock"<<std::endl;
                         #endif
@@ -595,10 +606,7 @@ class skiplist {
                         // BITMAP_CLEAR(this->child_bitmap, n);
                     }
                     int check = BITMAP_GET(this->none_bitmap, n) == 1?0:BITMAP_GET(this->child_bitmap, n)+1;
-                    if(check != new_state){
-                        std::cout<<"state failed\n";
-                    }
-                    this->mlock[n].unlock();
+                    this->mlock->unlock();
                     #if MICROLOCK_DEBUG
                     std::cout<<this<<"\t"<<n<<"\tunlock"<<std::endl;
                     #endif
@@ -791,6 +799,8 @@ class skiplist {
                     const int bitmap_size = BITMAP_SIZE(n->num_items);
                     delete_bitmap(n->none_bitmap, bitmap_size);
                     delete_bitmap(n->child_bitmap, bitmap_size);
+                    // delete_MicroLock(n->mlock,1);
+                    // n->mlock = nullptr;
                     delete_subtree(n, 1);
                 // }
             }
@@ -823,10 +833,9 @@ class skiplist {
             MicroLock* x = microlock_allocator.allocate(n);
             return x;
         }
-        //TODO
-        // void delete_MicroLock(bitmap_t* x, int n){
-        //     microlock_allocator.deallocate(x, n);
-        // }
+        void delete_MicroLock(MicroLock* x, int n){
+            microlock_allocator.deallocate(x, n);
+        }
 
         
         //--------------------------subtree operation--------------------------//
@@ -865,66 +874,113 @@ class skiplist {
                     else//state = pointer 
                         go to next layer   
             */
-            subtree* n = root->DataArray;
+            subtree* n = root->DataArray;//此时root不会变动dataarray
             // int insert_to_data = 1;
             int pos = n->predict(key);
             StateType state_raw;
-            Item Item_raw;
+            // Item Item_raw;
             //Get(address,state,expected)
-            n->GetStateItem(pos,state_raw,Item_raw);//not unlock the item
+            // n->GetStateItem(pos,state_raw,Item_raw);//not unlock the item
+            while(n->mlock->try_lock() == false){;}
+            state_raw = BITMAP_GET(n->none_bitmap, pos) == 1?0:BITMAP_GET(n->child_bitmap, pos)+1;
             while(1){
+                #if DEBUG
+                if(path_size == 2*MAX_DEPTH){
+                    std::cout<<"path size out of bound"<<std::endl;
+                }
+                if(path_size <0){
+                    std::cout<<"path_size < 0\n";
+                }
+                if(pos >= n->num_items){
+                    std::cout<<"pos out of bound\n";
+                }
+                #endif
                 path[path_size] = n;
                 path_size++;
                 if(state_raw == ItemState::Empty){
-                    Item Item_new;
-                    Item_new.comp.data.key = key;
-                    Item_new.comp.data.value = value;
-                    if(n->CASStateItem(pos,state_raw,Item_raw,ItemState::Element,Item_new)){//unlock the item in CASStateItem 
-                        n->size.fetch_add(1, std::memory_order_relaxed);
+                    // Item Item_new;
+                    // Item_new.comp.data.key = key;
+                    // Item_new.comp.data.value = value;
+                    // if(Item_raw.comp.data.key != 0){
+                    //     std::cout<<"not empty\n";
+                    // }
+                    // if(n->CASStateItem(pos,state_raw,Item_raw,ItemState::Element,Item_new)){//unlock the item in CASStateItem 
+                    //     n->size.fetch_add(1, std::memory_order_relaxed);
+                    //     break;
+                    // }
+                    int real_state = BITMAP_GET(n->none_bitmap, pos) == 1?0:BITMAP_GET(n->child_bitmap, pos)+1;
+                    if(state_raw == real_state){
+                        BITMAP_CLEAR(n->none_bitmap, pos);
+                        n->items[pos].comp.data.key = key;
+                        n->items[pos].comp.data.value = value;
+                        n->size.fetch_add(1, std::memory_order_acquire);
+                        n->mlock->unlock();
                         break;
-                    }else{//CAS failed
+                    }else{//not release lock
                         path_size--;
+                        // pos = n->predict(key);
+                        state_raw = BITMAP_GET(n->none_bitmap, pos) == 1?0:BITMAP_GET(n->child_bitmap, pos)+1;
+                        // memcpy(&Item_raw,n->items+pos,sizeof(Item));
                         continue;
                     }
                 }else if(state_raw == ItemState::Element){
-                    if(path_size == 1 &&  n->size.load(std::memory_order_relaxed) == 1){//TODO:size需要从get到修改值期间不被修改,由subtree 初始的信号量=2控制
+                    if(path_size == 1 &&  n->size.load(std::memory_order_acquire) == 1){//TODO:size需要从get到修改值期间不被修改,由subtree 初始的信号量=2控制
                         //here try to change state to zero
-                        subtree* newtree =  build_tree_two(key, value, Item_raw.comp.data.key, Item_raw.comp.data.value,0,0,n);
+                        subtree* newtree =  build_tree_two(key, value, n->items[pos].comp.data.key, n->items[pos].comp.data.value,0,0,n);
                         memcpy(root->DataArray, newtree, sizeof(subtree));//shallow copy,so just free newtree
                         delete_subtree(newtree, 1);
-                        string k = "@@ "+std::to_string(key)+" "+std::to_string(Item_raw.comp.data.key)+"@@\n";
-                        std::cout<<k;
+                        // string k = "@@ "+std::to_string(key)+" "+std::to_string(Item_raw.comp.data.key)+"@@\n";
+                        // std::cout<<k;
                         path[0] = root->DataArray;
                         break;
                     }else{
-                        Item Item_new;
+                        // Item Item_new;
+                        subtree* next_subtree = nullptr;
                         {//compute
                             std::pair<unsigned int,unsigned int>line = computeRange(pos,n);
-                            Item_new.comp.child = build_tree_two(key, value,Item_raw.comp.data.key, Item_raw.comp.data.value,min(line.first,min(key,Item_raw.comp.data.key)),line.second);   
+                            next_subtree = build_tree_two(key, value,n->items[pos].comp.data.key, 
+                            n->items[pos].comp.data.value,min(line.first,min(key,n->items[pos].comp.data.key)),
+                            line.second);   
                         }
-                        if(n->CASStateItem(pos,state_raw,Item_raw,ItemState::Subtree,Item_new)){
-                            n->size.fetch_add(1, std::memory_order_relaxed);
+                        // if(n->CASStateItem(pos,state_raw,Item_raw,ItemState::Subtree,Item_new)){
+                        //     n->size.fetch_add(1, std::memory_order_relaxed);
+                        //     path[path_size] = n->items[pos].comp.child;
+                        //     path_size++;
+                        //     break;
+                        // }
+                        int real_state = BITMAP_GET(n->none_bitmap, pos) == 1?0:BITMAP_GET(n->child_bitmap, pos)+1;
+                        if(state_raw == real_state){
+                            BITMAP_SET(n->child_bitmap, pos);
+                            n->items[pos].comp.child = next_subtree;
+                            n->size.fetch_add(1, std::memory_order_acquire);
+                            if(path_size >= 2*MAX_DEPTH){
+                                std::cout<<"path_size out of bound\n";
+                            }
                             path[path_size] = n->items[pos].comp.child;
                             path_size++;
-                            #if 0
-                            std::cout<<"subtree\n";
-                            #endif
+                            n->mlock->unlock();
                             break;
                         }else{
-                            delete_items(Item_new.comp.child->items, 32);
-                            delete_bitmap(Item_new.comp.child->none_bitmap, 4);
-                            delete_bitmap(Item_new.comp.child->child_bitmap, 4);
-                            delete_subtree(Item_new.comp.child, 1);
+                            delete_items(next_subtree->items, 32);
+                            delete_bitmap(next_subtree->none_bitmap, 4);
+                            delete_bitmap(next_subtree->child_bitmap, 4);
+                            // delete_MicroLock(Item_new.comp.child->mlock,1);
+                            // Item_new.comp.child->mlock = nullptr;
+                            delete_subtree(next_subtree, 1);
                             path_size--;
+                            state_raw = BITMAP_GET(n->none_bitmap, pos) == 1?0:BITMAP_GET(n->child_bitmap, pos)+1;
+                            // memcpy(&Item_raw,n->items+pos,sizeof(Item));
                             continue;
                         }
                     }
                 }else{//ItemState::Subtree
-                    n->size.fetch_add(1, std::memory_order_relaxed);
-                    subtree* next_n = Item_raw.comp.child;//n->items[pos].comp.child;
+                    n->size.fetch_add(1, std::memory_order_acquire);
+                    subtree* next_n = n->items[pos].comp.child;//n->items[pos].comp.child;
                     int next_pos = next_n->predict(key);
-                    next_n->GetStateItem(next_pos,state_raw,Item_raw);//not unlock the item
-                    n->mlock[pos].unlock();
+                    // next_n->GetStateItem(next_pos,state_raw,Item_raw);//not unlock the item
+                    while(next_n->mlock->try_lock() == false){;}
+                    state_raw = BITMAP_GET(next_n->none_bitmap, next_pos) == 1?0:BITMAP_GET(next_n->child_bitmap, next_pos)+1;
+                    n->mlock->unlock();
                     #if MICROLOCK_DEBUG
                     std::cout<<this<<"\t"<<n<<"\tunlock"<<std::endl;    
                     #endif
@@ -960,8 +1016,10 @@ class skiplist {
             n->start = UNINT_MAX;
             n->stop = UNINT_MAX;
             n->items = new_items(1);
-            memset(n->items,0,1);
+            memset(n->items,0,sizeof(Item));
             n->mlock = new_MicroLock(1);
+            n->mlock->try_lock();
+            n->mlock->unlock();
             n->none_bitmap = new_bitmap(1);
             n->none_bitmap[0] = 0;
             BITMAP_SET(n->none_bitmap, 0);
@@ -983,8 +1041,10 @@ class skiplist {
             n->start = st;
             n->stop = ed;
             n->items = new_items(1);
-            memset(n->items,0,1);
+            memset(n->items,0,sizeof(Item));
             n->mlock = new_MicroLock(1);
+            n->mlock->try_lock();
+            n->mlock->unlock();
             n->none_bitmap = new_bitmap(1);
             n->none_bitmap[0] = 0;
             BITMAP_SET(n->none_bitmap, 0);
@@ -1011,12 +1071,12 @@ class skiplist {
             n->num_inserts = 0;// n->num_insert_to_data = 0;
             n->num_items = 32;//8
             n->items = new_items(n->num_items);
-            memset(n->items,0,n->num_items);
-            n->mlock = new_MicroLock(n->num_items);
-            for(int i = 0;i<n->num_items;i++){
-                n->mlock[i].try_lock();
-                n->mlock[i].unlock();
-            }
+            memset(n->items,0,(n->num_items)*sizeof(Item));
+            n->mlock = new_MicroLock(1);
+            // for(int i = 0;i<n->num_items;i++){
+                n->mlock->try_lock();
+                n->mlock->unlock();
+            // }
             n->none_bitmap = new_bitmap(4);
             n->child_bitmap = new_bitmap(4);
             // n->none_bitmap[0] = 0xff;
@@ -1090,20 +1150,23 @@ class skiplist {
                 const int begin = s.front().begin;
                 const int end = s.front().end;
                 const int lvl = s.front().lvl;
+                if(begin >= _size-1){
+                    std::cout<<"begin out of bound\n";
+                }
                 subtree* n = s.front().n;
                 s.pop();
                 RT_ASSERT(end - begin >= 2);
                 if(end-begin == 2){
                     //n要不是root要不是子subtree，start和stop都事先确定了
                     subtree* _ = build_tree_two(_keys[begin], _values[begin], _keys[begin+1], _values[begin+1],n->start,n->stop);
-                    //TODO:microlock support copy?
                     // subtree* raw_n = n;
                     // n = _;
+                    n->mlock = nullptr;
                     memcpy(n, _, sizeof(subtree));//shalow copy
-                    for(int i = 0;i<2;i++){
-                        n->mlock[i].try_lock();
-                        n->mlock[i].unlock();
-                    }
+                    // for(int i = 0;i<2;i++){
+                    //     n->mlock[i].try_lock();
+                    //     n->mlock[i].unlock();
+                    // }
                     delete_subtree(_, 1);
                     if(lvl == 1){
                         ret = n;
@@ -1130,7 +1193,9 @@ class skiplist {
                 else{
                     int mid1_pos = (size - 1) / 3;
                     int mid2_pos = (size - 1) * 2 / 3;
-
+                    if(mid2_pos >= size){
+                        std::cout<<"out of bound mid2_pos\n";
+                    }
                     RT_ASSERT(0 <= mid1_pos);
                     RT_ASSERT(mid1_pos < mid2_pos);
                     RT_ASSERT(mid2_pos < size - 1);
@@ -1158,12 +1223,12 @@ class skiplist {
                     // }
 
                     n->items = new_items(n->num_items);
-                    memset(n->items,0,n->num_items);
-                    n->mlock = new_MicroLock(n->num_items);
-                    for(int i = 0;i<n->num_items;i++){
-                        n->mlock[i].try_lock();
-                        n->mlock[i].unlock();
-                    }
+                    memset(n->items,0,n->num_items*sizeof(Item));
+                    n->mlock = new_MicroLock(1);
+                    // for(int i = 0;i<n->num_items;i++){
+                        n->mlock->try_lock();
+                        n->mlock->unlock();
+                    // }
                     const int bitmap_size = BITMAP_SIZE(n->num_items);
                     n->none_bitmap = new_bitmap(bitmap_size);
                     n->child_bitmap = new_bitmap(bitmap_size);
@@ -1182,6 +1247,9 @@ class skiplist {
                             } else {
                                 break;
                             }
+                        }
+                        if(item_i >= n->num_items){
+                            std::cout<<"out of bound item_i\n";
                         }
                         if (next == offset + 1) {
                             real_put_ele++;
@@ -1221,7 +1289,7 @@ class skiplist {
             return ret;
         }
 
-        std::pair<long double,int> scan_and_destroy_subtree(subtree* _root,K *keys,V *values, bool destory = true){
+        std::pair<long double,int> scan_and_destroy_subtree(subtree* _root,K *keys,V *values,int ESIZE, bool destory = true){
             typedef std::pair<int, subtree*> Seg; // <begin, subtree*>
             std::stack<Seg> s;
             s.push(Seg(0, _root));
@@ -1238,7 +1306,7 @@ class skiplist {
             while (!s.empty()) {
                 int begin = s.top().first;
                 subtree* n = s.top().second;
-                const int SHOULD_END_POS = begin + n->size.load(std::memory_order_relaxed);
+                const int SHOULD_END_POS = begin + n->size.load(std::memory_order_acquire);
                 s.pop();
                 for (int i = 0; i < n->num_items; i ++) {
                     if(mark == -1 && i>=half_stone){
@@ -1246,6 +1314,9 @@ class skiplist {
                     }
                     if (BITMAP_GET(n->none_bitmap, i) == 0) {
                         if (BITMAP_GET(n->child_bitmap, i) == 0) {
+                            if(begin >= ESIZE){
+                                std::cout<<"begin out of bound\n";
+                            }
                             keys[begin] = n->items[i].comp.data.key;
                             values[begin] = n->items[i].comp.data.value;
                             if(key_0 == -1)
@@ -1265,7 +1336,7 @@ class skiplist {
                             next_seg.first = begin;
                             next_seg.second = n->items[i].comp.child;
                             s.push(next_seg);
-                            begin += n->items[i].comp.child->size.load(std::memory_order_relaxed);
+                            begin += n->items[i].comp.child->size.load(std::memory_order_acquire);
                         }
                     }
                 }
@@ -1294,7 +1365,8 @@ class skiplist {
                         const int bitmap_size = BITMAP_SIZE(n->num_items);
                         delete_bitmap(n->none_bitmap, bitmap_size);
                         delete_bitmap(n->child_bitmap, bitmap_size);
-                        // delete_MicroLock(n->mlock,n->items);
+                        // delete_MicroLock(n->mlock,1);
+                        // n->mlock = nullptr;
                         delete_subtree(n, 1);
                     // }
                 }
@@ -1397,9 +1469,9 @@ class skiplist {
             int path_size = 0;
             int flag = 0;
             if(state == 0){
-                int ele_size = locate->DataArray->size.load(std::memory_order_relaxed);
+                int ele_size = locate->DataArray->size.load(std::memory_order_acquire);
                 if(ele_size <= 1){
-                    locate->work_threads.WaitWork();//wait working threads before this,work_thread --count
+                    locate->deta_inserts.WaitWork();//wait working threads before this,work_thread --count
                     flag = 1;
                 }
             }
@@ -1416,13 +1488,14 @@ class skiplist {
             #endif
             if(flag){
                 //flag = 1,means state = 0 and the size of n <=2 after insert_subtree, DataArray was updated
+                locate->deta_inserts.SignalWork();
                 locate->deta_inserts.SignalAll();//wake up blocked threads
                 return;
             }
             const bool need_rebuild = ( state == 0);//path_size >= MAX_DEPTH ;
             if(!need_rebuild){
                 //结束插入不需要修改deta_inserts
-                locate->work_threads.SignalWork();//working threads number --
+                locate->deta_inserts.SignalWork();//working threads number --
                 // locate->ReleaseExclusive();
                 return;
             }else{
@@ -1435,18 +1508,19 @@ class skiplist {
                 //     return;
                 // }
                 // std::cout<<"--rebuild ["<<locate<<"]--\n";
-                locate->work_threads.WaitWork();//wait working threads before this
-                const int ESIZE = n->size.load(std::memory_order_relaxed);
+                locate->deta_inserts.WaitWork();//wait working threads before this
+                const int ESIZE = n->size.load(std::memory_order_acquire);
                 unsigned int* keys = new unsigned int[ESIZE];
                 int* values = new int[ESIZE];
                 unsigned int n_start = n->start,n_stop = n->stop;
                 memset(keys,0,ESIZE);
                 memset(values,0,ESIZE);
-                std::pair<long double,int> res = scan_and_destroy_subtree(n,keys,values);
+                std::pair<long double,int> res = scan_and_destroy_subtree(n,keys,values,ESIZE);
                 locate->DataArray = nullptr;
                 if((res.first < linearity )|| ESIZE >segment_max_size){
                     if(SplitSegment(locate,preds,keys,values,ESIZE,n_start,n_stop)){
                         //SplitSegment already released the write lock of locate
+                        locate->deta_inserts.SignalWork();
                         locate->deta_inserts.SignalAll();//wake up blocked threads
                         // std::cout<<"split"<<std::endl;
                         delete[] keys;
@@ -1459,10 +1533,10 @@ class skiplist {
                 locate->DataArray = newsubtree;
                 // locate->ReleaseSplit();
                 // locate->ReleaseExclusive();
-
-                locate->deta_inserts.SignalAll();//wake up blocked threads
                 delete[] keys;
-                delete[] values;  
+                delete[] values;
+                locate->deta_inserts.SignalWork();  
+                locate->deta_inserts.SignalAll();//wake up blocked threads
                 return;
             }
             return;
@@ -1470,7 +1544,7 @@ class skiplist {
 
         bool SplitSegment(Segment_pt *root,SNode** preds,K *_keys,int*  _values,int _size,K _start,K _stop){
             //1. partition array
-
+            // std::cout<<"split\n";
             int st = 0,ed =0;//the rank of the first/last+1 ele of one segment
             GreedyPLR* plr = new GreedyPLR(gamma);
             vector<Segment*> seg;
@@ -1552,7 +1626,7 @@ class skiplist {
                     // new_subtree->start = base;
                     // new_subtree->stop = bound;
                     BITMAP_CLEAR(new_subtree->none_bitmap,0);
-                    new_subtree->size.fetch_add(1, std::memory_order_relaxed);
+                    new_subtree->size.fetch_add(1, std::memory_order_acquire);
                     new_subtree->num_inserts++;
                     new_subtree->items[0].comp.data.key = _keys[st];
                     new_subtree->items[0].comp.data.value = _values[st];
@@ -1573,6 +1647,7 @@ class skiplist {
                     NewIndexArrayWithData(height_tmp,base,bound,new_subtree,SNodeArray);
                     next_seg = SNodeArray[0];
                     split_segments[i] = reinterpret_cast<Segment_pt*>(next_seg);//store segment in split_segments
+                    reinterpret_cast<Segment_pt*>(next_seg)->deta_inserts.AddWork();//限制split
                     // Acquire(next_seg);
                     #if DEBUG
                     cerr<<"try to next_seg"<<next_seg<<endl;
@@ -1613,6 +1688,7 @@ class skiplist {
                 root->DataArray = root_dataarray;
                 // root->ReleaseSplit();
                 // root->ReleaseExclusive();
+                delete plr;
                 return true;
             }else{
                 //2.6 link the bottom(segment_pt)
@@ -1666,10 +1742,10 @@ class skiplist {
                     }
                 }
                 //2.11 release the split locks of segment group 
-                // for(int i = 1;i<seg_size;i++){
-                //     split_segments[i]->ReleaseSplit();
-                // }
-
+                for(int i = 1;i<seg_size;i++){
+                    split_segments[i]->deta_inserts.SignalWork();
+                }
+                delete plr;
                 return true;
             }
             return true;
@@ -1823,17 +1899,18 @@ class skiplist {
                 // int state = locate->deta_inserts.Wait(IsREAD_THREAD);
                 locate->deta_inserts.Wait(IsREAD_THREAD);
                 if(key < locate->bound){
-                    locate->work_threads.AddWork();
+                    // locate->work_threads.AddWork();
                     // //TODO:to check read thread中该部分应该在lookup结束后，还是addwork结束与lookup之间
                     // if(state == 0)
                     //     locate->deta_inserts.SignalOne();//避免threads一直无法被唤醒
                     std::pair<int,V> res = locate->Lookup(key);
-                    locate->work_threads.SignalWork();
+                    locate->deta_inserts.SignalWork();
                     return res;
                 }
                 // if(state == 0)//同Add中对应code
                 //     locate->deta_inserts.SignalOne();
                 //skip
+                locate->deta_inserts.SignalWork();
                 locate = reinterpret_cast<Segment_pt*>(locate->Next());
             }
             return {-1,0};
@@ -1846,7 +1923,8 @@ class skiplist {
                 preds[i] = nullptr;
             }
             Segment_pt* locate = reinterpret_cast<Segment_pt*>(Scan(key,preds));
-            while(true){
+            while(true){    
+                //TODO:可以把这次比较去掉
                 if(key < locate->bound){//locate可能由于split，bound缩小了，需要跳过
 #if DEBUG
                     cerr<<"try to acquire"<<locate<<endl;
@@ -1859,15 +1937,18 @@ class skiplist {
                     int state = locate->deta_inserts.Wait();
                     // locate->ExclusiveLock();
                     if(key < locate->bound){ 
-                        locate->work_threads.AddWork();
+                        // locate->work_threads.AddWork();
                         Add_key_in_Segment(key,value,preds,locate,state);//will ReleaseExclusive and finish operations on deta_inserts and work_threads
                         return;
                     }
                     // locate->ReleaseExclusive();
                     if(state == 0)//由于刚好前面的线程对locate进行了rebuild/split，本该当前线程notify all，现在要执行SignalOne再skip,
-                        locate->deta_inserts.SignalOne();//deta_insert=1 and wake up one blocked thread to do split/rebuild 
-                                                        //which will notify the other threads 
-                    //其他情况state > 0，可以乐观的认为插了一个重复的键，这里不做其他处理
+                    {
+                        locate->deta_inserts.SignalWork();
+                        locate->deta_inserts.SignalOne();
+                    }//deta_insert=1 and wake up one blocked thread to do split/rebuild 
+                    else                                    //which will notify the other threads 
+                        locate->deta_inserts.SignalWork();//其他情况state > 0，可以乐观的认为插了一个重复的键，这里不做其他处理
                     #if DEBUG
                     cerr<<"Release "<<locate<<endl;
                     #endif
