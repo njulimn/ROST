@@ -42,7 +42,7 @@ typedef uint8_t bitmap_t;
 #define Gm 64
 #define MAX_DEPTH 6
 #define WRITESEG 0
-#define DETA_INSERT 50000//该值设定不可过小
+#define DETA_INSERT 200000//该值设定不可过小
 #define SEMA_DEBUG 0
 #define MICROLOCK_DEBUG 0
 #define IsREAD_THREAD 1
@@ -497,7 +497,8 @@ class skiplist {
             double slope = 0,intercept = 0;
             K start = UNINT_MAX,stop=UNINT_MAX;
             Item* items = nullptr;
-            MicroLock* mlock = nullptr;
+            std::mutex *mlock;
+            // MicroLock* mlock = nullptr;
             bitmap_t* none_bitmap = nullptr; // 1 means None, 0 means Data or Child
             bitmap_t* child_bitmap = nullptr; // 1 means Child. will always be 0 when none_bitmap is 1
             
@@ -558,7 +559,8 @@ class skiplist {
 
             //for reader thread to get the lock of n->items[pos]
             inline void LockItem(int n){
-                while(this->mlock->try_lock() == false){;}
+                // while(this->mlock->try_lock() == false){;}
+                this->mlock->lock();
                 // this->mlock->lock();
             }
 
@@ -570,7 +572,8 @@ class skiplist {
             //for writer thread to atomically get the state and value of n->items[pos], atomic through the microlock
             void GetStateItem(int n,int &state,Item &raw_item){
             //state 0:empty 1:element 2:subtree
-                while(this->mlock->try_lock() == false){;}
+                // while(this->mlock->try_lock() == false){;}
+                this->mlock->lock();
                 #if MICROLOCK_DEBUG
                 std::cout<<this<<"\t"<<n<<"\tlock"<<std::endl;
                 #endif
@@ -625,10 +628,10 @@ class skiplist {
             // mutable std::shared_mutex write;//TODO:
             // std::atomic<bool> spliting;//true means segment is spliting
             Semaphore deta_inserts;//从上一次build/split后insert的个数
-            Semaphore work_threads;//当前在本段(及其子树)的读写线程数
+            // Semaphore work_threads;//当前在本段(及其子树)的读写线程数
 
             Segment_pt(K base,K bnd,int lvl,int deta_insert_init = DETA_INSERT):SNode(base,false),bound(bnd),level(lvl),
-            deta_inserts(Semaphore(deta_insert_init)),work_threads(Semaphore(0)){}   
+            deta_inserts(Semaphore(deta_insert_init)){}   
 
             // inline void InitLock(){
             //     write.store(true, std::memory_order_release);
@@ -851,7 +854,7 @@ class skiplist {
             }
         }
 
-        void insert_subtree(Segment_pt* root,K key,V value,subtree* path[],int &path_size){
+        void insert_subtree(Segment_pt* root,K key,V value,vector<subtree*> &path,int &path_size){
             /*
             几个变量：state(指示数组某位状态,empty element pointer),expected(第一次访问时数组某位的值),newvalue(数组某位期望修改的值)
             获取state和expected 为原子性的
@@ -881,20 +884,16 @@ class skiplist {
             // Item Item_raw;
             //Get(address,state,expected)
             // n->GetStateItem(pos,state_raw,Item_raw);//not unlock the item
-            while(n->mlock->try_lock() == false){;}
+            // while(n->mlock->try_lock() == false){;}
+            n->mlock->lock();
             state_raw = BITMAP_GET(n->none_bitmap, pos) == 1?0:BITMAP_GET(n->child_bitmap, pos)+1;
+            int path_capacity = MAX_DEPTH;
             while(1){
-                #if DEBUG
-                if(path_size == 2*MAX_DEPTH){
-                    std::cout<<"path size out of bound"<<std::endl;
+                if(path_size == path_capacity){
+                    path.reserve(2*path_capacity);
+                    path.resize(2*path_capacity);
+                    path_capacity*=2;
                 }
-                if(path_size <0){
-                    std::cout<<"path_size < 0\n";
-                }
-                if(pos >= n->num_items){
-                    std::cout<<"pos out of bound\n";
-                }
-                #endif
                 path[path_size] = n;
                 path_size++;
                 if(state_raw == ItemState::Empty){
@@ -953,8 +952,9 @@ class skiplist {
                             BITMAP_SET(n->child_bitmap, pos);
                             n->items[pos].comp.child = next_subtree;
                             n->size.fetch_add(1, std::memory_order_acquire);
-                            if(path_size >= 2*MAX_DEPTH){
-                                std::cout<<"path_size out of bound\n";
+                            if(path_size == path_capacity){
+                                path.reserve(path_capacity+1);
+                                path.resize(path_capacity+1);
                             }
                             path[path_size] = n->items[pos].comp.child;
                             path_size++;
@@ -978,7 +978,8 @@ class skiplist {
                     subtree* next_n = n->items[pos].comp.child;//n->items[pos].comp.child;
                     int next_pos = next_n->predict(key);
                     // next_n->GetStateItem(next_pos,state_raw,Item_raw);//not unlock the item
-                    while(next_n->mlock->try_lock() == false){;}
+                    // while(next_n->mlock->try_lock() == false){;}
+                    next_n->mlock->lock();
                     state_raw = BITMAP_GET(next_n->none_bitmap, next_pos) == 1?0:BITMAP_GET(next_n->child_bitmap, next_pos)+1;
                     n->mlock->unlock();
                     #if MICROLOCK_DEBUG
@@ -1017,9 +1018,9 @@ class skiplist {
             n->stop = UNINT_MAX;
             n->items = new_items(1);
             memset(n->items,0,sizeof(Item));
-            n->mlock = new_MicroLock(1);
-            n->mlock->try_lock();
-            n->mlock->unlock();
+            n->mlock = new mutex();//new_MicroLock(1);
+            // n->mlock->try_lock();
+            // n->mlock->unlock();
             n->none_bitmap = new_bitmap(1);
             n->none_bitmap[0] = 0;
             BITMAP_SET(n->none_bitmap, 0);
@@ -1042,9 +1043,9 @@ class skiplist {
             n->stop = ed;
             n->items = new_items(1);
             memset(n->items,0,sizeof(Item));
-            n->mlock = new_MicroLock(1);
-            n->mlock->try_lock();
-            n->mlock->unlock();
+            n->mlock = new mutex();//new_MicroLock(1);
+            // n->mlock->try_lock();
+            // n->mlock->unlock();
             n->none_bitmap = new_bitmap(1);
             n->none_bitmap[0] = 0;
             BITMAP_SET(n->none_bitmap, 0);
@@ -1072,10 +1073,10 @@ class skiplist {
             n->num_items = 32;//8
             n->items = new_items(n->num_items);
             memset(n->items,0,(n->num_items)*sizeof(Item));
-            n->mlock = new_MicroLock(1);
+            n->mlock = new mutex();//new_MicroLock(1);
             // for(int i = 0;i<n->num_items;i++){
-                n->mlock->try_lock();
-                n->mlock->unlock();
+                // n->mlock->try_lock();
+                // n->mlock->unlock();
             // }
             n->none_bitmap = new_bitmap(4);
             n->child_bitmap = new_bitmap(4);
@@ -1161,7 +1162,7 @@ class skiplist {
                     subtree* _ = build_tree_two(_keys[begin], _values[begin], _keys[begin+1], _values[begin+1],n->start,n->stop);
                     // subtree* raw_n = n;
                     // n = _;
-                    n->mlock = nullptr;
+                    // delete n->mlock;
                     memcpy(n, _, sizeof(subtree));//shalow copy
                     // for(int i = 0;i<2;i++){
                     //     n->mlock[i].try_lock();
@@ -1224,10 +1225,10 @@ class skiplist {
 
                     n->items = new_items(n->num_items);
                     memset(n->items,0,n->num_items*sizeof(Item));
-                    n->mlock = new_MicroLock(1);
+                    n->mlock = new mutex();//new_MicroLock(1);
                     // for(int i = 0;i<n->num_items;i++){
-                        n->mlock->try_lock();
-                        n->mlock->unlock();
+                        // n->mlock->try_lock();
+                        // n->mlock->unlock();
                     // }
                     const int bitmap_size = BITMAP_SIZE(n->num_items);
                     n->none_bitmap = new_bitmap(bitmap_size);
@@ -1465,7 +1466,8 @@ class skiplist {
 
         //add a key-value into segment_pt
         void Add_key_in_Segment(K key,V value,SNode** preds,Segment_pt* locate,int state){
-            subtree* path[MAX_DEPTH*2];
+            // subtree* path[MAX_DEPTH*2];
+            vector<subtree*> path(MAX_DEPTH);
             int path_size = 0;
             int flag = 0;
             if(state == 0){
@@ -1917,7 +1919,7 @@ class skiplist {
         }
 
         //skiplist add a key 
-        void Add(K key,V value,long long &cascnt_acquire,long long &move_bottom,long long &split_block){
+        bool Add(K key,V value){
             SNode* preds[MaxLevel+1];
             for(int i =0;i<=MaxLevel;i++){
                 preds[i] = nullptr;
@@ -1939,7 +1941,10 @@ class skiplist {
                     if(key < locate->bound){ 
                         // locate->work_threads.AddWork();
                         Add_key_in_Segment(key,value,preds,locate,state);//will ReleaseExclusive and finish operations on deta_inserts and work_threads
-                        return;
+                        if(!state)
+                            return true;
+                        else
+                            return false;
                     }
                     // locate->ReleaseExclusive();
                     if(state == 0)//由于刚好前面的线程对locate进行了rebuild/split，本该当前线程notify all，现在要执行SignalOne再skip,
@@ -1963,7 +1968,8 @@ class skiplist {
                 //     next = locate->Next();
                 // }
                 locate = reinterpret_cast<Segment_pt*>(next);
-            }	
+            }
+            return false;	
         }
 
         void ShowSegmentNumber(){
