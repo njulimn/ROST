@@ -1,6 +1,6 @@
 
  cmake_minimum_required(VERSION 3.15)
- set(project_name follylock)
+ set(project_name LearnedSkipList)
  PROJECT(${project_name})
  find_package(Boost REQUIRED)
  find_package(folly REQUIRED)
