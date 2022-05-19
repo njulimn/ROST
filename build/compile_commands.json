@@ -1,7 +1,0 @@
-[
-{
-  "directory": "/mnt/e/skiplistExp/LearnedSkipList/build",
-  "command": "/bin/x86_64-linux-gnu-g++-9  -DDEBUG_ON -I/mnt/e/skiplistExp/LearnedSkipList/include  -g -Wall  -O0 -Wall -g2 -ggdb   -std=c++11 -o CMakeFiles/LearnedSkipList.dir/src/main.cpp.o -c /mnt/e/skiplistExp/LearnedSkipList/src/main.cpp",
-  "file": "/mnt/e/skiplistExp/LearnedSkipList/src/main.cpp"
-}
-]

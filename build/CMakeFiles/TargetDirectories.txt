@@ -1,3 +1,0 @@
-/mnt/e/skiplistExp/LearnedSkipList/build/CMakeFiles/rebuild_cache.dir
-/mnt/e/skiplistExp/LearnedSkipList/build/CMakeFiles/edit_cache.dir
-/mnt/e/skiplistExp/LearnedSkipList/build/CMakeFiles/LearnedSkipList.dir
