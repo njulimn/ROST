@@ -14,15 +14,24 @@
 #define THREAD_NUMBER 32
 #define NOFINDDEBUG 0
 #define QUERY_TEST 1
+#define TEST_4 0
 
+#if TEST_4
+int key_dis = (4*MM)/THREAD_NUMBER;
+#else
 int key_dis = (NUMBERDATA)/THREAD_NUMBER;
+#endif
 unsigned int *dataq0 = new unsigned int[NUMBERDATA];
 skiplist<unsigned int,int> *list = new skiplist<unsigned int,int>(SkiplistMaxLevel,Gm);
 
-// int max_depths[THREAD_NUMBER];
-// long long path_depths[THREAD_NUMBER];
-// long long scan_cnts[THREAD_NUMBER];
-// long long partial_r[THREAD_NUMBER];
+long long partial_r[THREAD_NUMBER];
+long long MAX_DEPTH_array[THREAD_NUMBER];
+long long scan_time_on_check[THREAD_NUMBER];
+int split_total[THREAD_NUMBER];
+long long collision_total[THREAD_NUMBER];
+long long insert_time_total[THREAD_NUMBER];
+
+unsigned int min_key;
 
 using namespace chrono;
 
@@ -32,9 +41,10 @@ void GetData(){
     // //unique_iot_web_unique
     ifstream fp(unique_dadta_file);
     string line;
+    min_key = UNINT_MAX;
     for(int i =0;i<NUMBERDATA;i++){
         getline(fp,line);
-        dataq0[i] = atoi(line.c_str());   
+        dataq0[i] = atoi(line.c_str());  
     }
     fp.close();
     // for(int i = 0;i<NUMBERDATA;i++){
@@ -45,27 +55,29 @@ void GetData(){
     // std::shuffle(dataq0, dataq0+NUMBERDATA, g);
 }
 
-void test(const int id,const int bound_l,const int bound_r ){
-    // long long caslock_acquire = 0,bottom_move = 0,split_blk = 0; 
-    // std::pair<int,int> res;
-    // long long scan_cnt = 0;
-    // long long depth = 0;
-    // int max_depth_ = 0;
-    int cnt = 0;
+void test_insert(const int id,const int bound_l,const int bound_r ,int dijiduan){
+    long long rebuild_cnt = 0;
+    int MaxDepth = 1;
+    int SplitCnt = 0;
+    long long scan_on_rebuild_topk = 0;
+    long long collision_ = 0;
     for(int i = bound_l;i<bound_r;i++){
         if(dataq0[i] == 0 || dataq0[i] == UNINT_MAX)
             continue;
-        list->Add(dataq0[i],i,cnt);
-        // int cnt = 0;
-        // if(list->Add(dataq0[i],i,cnt)){
-        //     scan_cnt++;
-        // }
-        // depth+=cnt;
-        // max_depth_ = max(max_depth_,cnt);
+        // list->Add(dataq0[i],i,cnt);
+        int cnt = 0;
+        long long scan = 0;
+        long long collision_cnt = 0;
+        if(list->Add(dataq0[i],i,cnt,scan,SplitCnt,collision_cnt)){
+            rebuild_cnt++;
+        }
+        scan_on_rebuild_topk+=scan;
+        collision_+=collision_cnt;
     }
-    // path_depths[id] = depth;
-    // scan_cnts[id] = scan_cnt;
-    // max_depths[id] = max_depth_;
+    partial_r[id] = rebuild_cnt;
+    scan_time_on_check[id] = scan_on_rebuild_topk;
+    split_total[id] = SplitCnt;
+    collision_total[id] = collision_;
 }
 
 void test_query(const int id,const int bound_l,const int bound_r ){
@@ -84,14 +96,18 @@ void test_query(const int id,const int bound_l,const int bound_r ){
         std::cout<<"nofind:\t"<<nofind<<std::endl;
 }
 
-void Insert_Half(int &kk){
+void Insert_Part(int &kk,int id){
     std::vector<thread> threads;
     #if PRFO
-    ProfilerStart("test.prof");
+    string name = "test"+std::to_string(id)+".prof";
+    ProfilerStart(name.c_str());
     #endif
+    for(int i = 0;i<THREAD_NUMBER;i++){
+        partial_r[i] = 0;
+    }
     const auto start_time = std::chrono::steady_clock::now();
     for(int idx=0; idx < THREAD_NUMBER; idx++){
-        threads.push_back(thread(test, idx,kk,kk+key_dis));
+        threads.push_back(thread(test_insert, idx,kk,kk+key_dis,id));
         kk+=key_dis;
     } 
     for(int idx=0; idx <THREAD_NUMBER; idx++){
@@ -102,15 +118,32 @@ void Insert_Half(int &kk){
     #endif
     const auto end_time = std::chrono::steady_clock::now();
     const auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
-    std::cout << "insert time: " << duration.count() << "us"<<std::endl;
+    long long cnt = 0;
+    long long split_cnt = 0;
+    long long time_scan = 0;
+    long long collision_cnt = 0;
+    for(int i = 0;i<THREAD_NUMBER;i++){
+        cnt+=partial_r[i];
+        time_scan+=scan_time_on_check[i];
+        // std::cout<<i<<" time on split/scan:"<<time_scan<<std::endl;
+        split_cnt+=split_total[i];
+        collision_cnt+=collision_total[i];
+    }
+    insert_time_total[id] = duration.count();
+    string outs = "insert time: "+ std::to_string( duration.count()) + "us\trebuild cnt: " + std::to_string(cnt)+ 
+        "\ttime on split/rebuild: " + std::to_string(time_scan) +"\tsplit cnt:"+std::to_string(split_cnt)+
+        "\tcollision cnt:"+std::to_string(collision_cnt)+"\t";
+    std::cout<<outs;
+    list->ShowSegmentNumber(false);
 }
 
-void Query_Half(int st){
+void Query_Part(int &st){
     std::vector<thread> threads_2;
     const auto start_time = std::chrono::steady_clock::now();
+    int query_key_dis = NUMBERDATA/THREAD_NUMBER;
     for(int idx=0; idx < THREAD_NUMBER; idx++){
-        threads_2.push_back(thread(test_query, idx,st,st+key_dis));
-        st+=key_dis;
+        threads_2.push_back(thread(test_query, idx,st,st+query_key_dis));
+        st+=query_key_dis;
     } 
     for(int idx=0; idx <THREAD_NUMBER; idx++){
         threads_2[idx].join();
@@ -121,40 +154,30 @@ void Query_Half(int st){
 }
 
 int main(){
+    const auto start_time = std::chrono::steady_clock::now();
     GetData();
     srand((int)time(0));
-    std::cout<<"NUMBERDATA:"<<NUMBERDATA<<std::endl;
-    std::cout<<"THREAD_NUMBER:"<<THREAD_NUMBER<<std::endl;
-    std::cout<<"SkiplistMaxLevel:"<<SkiplistMaxLevel<<std::endl;
-    std::cout<<"list max segment size:"<<list->segment_max_size<<std::endl;
-    std::cout<<"DETA_INSERT:"<<DETA_INSERT<<std::endl;
+    std::cout<<"NUMBERDATA:"<<NUMBERDATA<<"\tTHREAD_NUMBER:"<<THREAD_NUMBER<<std::endl;
+    std::cout<<"SkiplistMaxLevel:"<<SkiplistMaxLevel<<"\tmax segment size:"<<list->segment_max_size<<"\tDETA_INSERT:"<<DETA_INSERT<<std::endl;
+    const auto end_time = std::chrono::steady_clock::now();
+    const auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
+    std::cout << "prepare time: " << duration.count() << "us"<<std::endl;
     int kk = 0;
-    Insert_Half(kk);
-    Query_Half(0);   
-
-    // long long scan = 0;
-    // long long depth_sum = 0;
-    // long long partial_ = 0;
-    // int max_depth_ = 0;
-    // for(int i = 0;i<THREAD_NUMBER;i++){
-    //     scan+=scan_cnts[i];
-    //     depth_sum+=path_depths[i];
-    //     max_depth_ = max(max_depth_,max_depths[i]);
-    //     partial_+=partial_r[i];
-    // }
-    // std::cout<<"scan rebuild/split cnt: "<<scan<<std::endl;
-    // std::cout<<"depth of insert: "<<depth_sum<<"\t average: "<<depth_sum*1.0/NUMBERDATA<<"\tmax:"<<max_depth_<<std::endl;
-    // std::cout<<"partial_rebuild cnt: "<<partial_<<std::endl;
-    // list->ShowSegmentNumber();
-    #if 0
-    std::vector<thread> threads_2;
-    kk = 0;
-    for(int idx=0; idx < THREAD_NUMBER; idx++){
-        threads_2.push_back(thread(test_query, idx,kk,kk+key_dis));
-        kk+=key_dis;
-    } 
-    for(int idx=0; idx <THREAD_NUMBER; idx++){
-        threads_2[idx].join();
+    
+    #if TEST_4
+    for(int i = 0;i<16;i++){
+        Insert_Part(kk,i);
     }
+    long long time_sum = 0;
+    for(int i = 0;i<THREAD_NUMBER;i++){
+        time_sum+=insert_time_total[i];
+    }
+    std::cout<<"sum of time:"<<time_sum<<std::endl;
+    #else
+    Insert_Part(kk,0);
     #endif
+    #if QUERY_TEST
+    kk = 0;
+    Query_Part(kk);
+    #endif   
 }

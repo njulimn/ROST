@@ -40,20 +40,26 @@ typedef uint8_t bitmap_t;
 #define Gm 64
 #define MAX_DEPTH 6
 #define INSERT_ROUTE 0
-#define SEGMENT_MAX_SIZE 5e4
+#define SEGMENT_MAX_SIZE 2e5
 #define WRITESEG 0
-#define DETA_INSERT 2e5//2e5
+#define DETA_INSERT 2e5
 #define IsREAD_THREAD 1
 #define StateType int
 #define INCREASE_MODEL 3
-#define W 0.6
+#define W 4
 #define Q 0.5
 #define SLOT_MAX_SIZE 4096
+#define NOREBUILD_th 0.02
+#define PARTIALREBUILD_th 0.2
 
 #define SHOWLINEAR 0
 #define DEBUG 0
 #define SEMA_DEBUG 0
 #define MICROLOCK_DEBUG 0
+#define TOPK_BUILD 0
+#define OUTPUT_TOPK 0
+#define SHOWBLOCK 0
+#define SHOWREBUILD 0
 
 // runtime assert
 #define RT_ASSERT(expr) \
@@ -346,6 +352,36 @@ enum ItemState {
     Empty = 0, Element, Subtree
 };
 
+int ComputeNextCount(const int seg_max_size,int esize,int slot_){
+    int remain_size = max(1,seg_max_size - esize);
+    int count = 0;
+    if(slot_ < 4096){
+        count  = int(slot_*2);
+    }
+    else if(slot_ < 4e5){
+        count = min(int(slot_*4),remain_size);
+    }else{
+        count = min(int(slot_*4),remain_size);
+    }
+    count = min(int(DETA_INSERT),count);
+    return count;
+}
+
+int ComputeSegmentMaxSize(int slot_,int esize,unsigned int key_space){
+    int res = 0; 
+    res = min((unsigned int)(2e5),key_space);
+    // if(esize < 5e4 && key_space > 0x3FFFFFF){// 
+    //     res = min((unsigned int)(2e5),key_space);
+    // }
+    // else if(esize < 1e5){
+    //     res = min((unsigned int)(2e5),key_space);
+    // }
+    // else{
+    //     res = min((unsigned int)(1e6),key_space);
+    // }
+    return res;
+}
+
 template<class K, class V>
 class skiplist {
     public:
@@ -355,32 +391,17 @@ class skiplist {
             }
             ~Semaphore(){}
             //for delta_inserts V,esize=the current slot number
-            void SignalAll(int esize=DETA_INSERT,int id=0){
+            void SignalAll(const int seg_max_size,int esize,int slot_=DETA_INSERT,int id=0){
                 std::unique_lock<std::mutex> lock(mutex_);
-                // string strs = std::to_string(count_)+"\n";
-                // std::cout<<strs;
-                #if INCREASE_MODEL == 1
-                    count_  = min(int(esize*W),threshold);
-                    threshold = min(int(esize*Q),(int)DETA_INSERT);
-                #elif INCREASE_MODEL == 2
-                    if((esize*W) < threshold){
-                        count_ = esize*W;
-                    }else{
-                        count_ = threshold;//希望delta_insert与slot齐平
-                        threshold = min(int(esize*Q),int(DETA_INSERT));
-                    }
-                #elif INCREASE_MODEL == 3
-                    if(esize > SLOT_MAX_SIZE){
-                        count_ = min(int(esize*W),(int)DETA_INSERT);
-                    }else{
-                        count_  = int(esize*W)>>1;//min(int(esize*W)>>1,(int)DETA_INSERT);
-                    }
-                #elif INCREASE_MODEL == 4
-                    count_  = esize*W<DETA_INSERT ? esize : DETA_INSERT;
-                #endif
+                // std::cout<<"blocked:"<<count_<<std::endl;
+                #if SHOWBLOCK
+                std::cout<<"blocked:"<<count_<<std::endl;
+                #endif 
+                count_ = ComputeNextCount(seg_max_size,esize,slot_);
                 #if SEMA_DEBUG
                 std::cout<<"thread "<<id<<" notify all"<<std::endl;
                 #endif
+                // std::cout<<count_<<std::endl;
                 cv_.notify_all();
             }
             //for delta_inserts V
@@ -466,6 +487,11 @@ class skiplist {
                 #endif
             }
             
+            //only test 
+            void UpdateCount(int cnt){
+                count_ = cnt;
+            }
+
         private:
             std::mutex mutex_;
             std::condition_variable cv_;
@@ -500,6 +526,59 @@ class skiplist {
             SNode(K base,bool type):Key(base),isIndex(type){}  
         };
         struct subtree;
+        struct HashTable{
+            std::pair<int,int> HashFunction(int pos){
+                return {pos*293%capacity,pos*673%capacity};
+            }
+
+            void Update(int pos,int cnt){
+                std::pair<int,int> predict_ = HashFunction(pos);
+                if(index_[predict_.first] == pos){
+                    count_[predict_.first] = cnt;
+                }else if(index_[predict_.second] == pos){
+                    count_[predict_.second] = cnt;
+                }else{
+                    int replace = count_[predict_.first] <= count_[predict_.second]?predict_.first:predict_.second;
+                    if(count_[replace] < cnt){
+                        index_[replace] = pos;
+                        count_[replace] = cnt;
+                    }
+                }
+            }
+
+            std::pair<int,int> SumUP(){
+                int sum = 0;
+                int max_cnt = 0;
+                for(int i = 0;i<capacity;i++){
+                    if(index_[i] != -1){
+                        sum+=(count_[i]);
+                        max_cnt = max(max_cnt,count_[i]);
+                    }
+                }
+                return {sum,max_cnt};
+            }
+
+            void Init(){
+                for(int i = 0;i<capacity;i++){
+                    index_[i] = -1;
+                    count_[i] = 0;
+                }
+            }
+
+            void Create(int capa){
+                capacity = capa;
+                index_ = new int[capacity];
+                count_ = new int[capacity];
+                for(int i = 0;i<capacity;i++){
+                    index_[i] = -1;
+                    count_[i] = 0;
+                }
+            }
+
+            int capacity;//read only
+            int *index_ = nullptr;//存放index 缺省值-1
+            int *count_ = nullptr;//存放对应的元素个数，缺省值0
+        };
         struct Item{
             union {
                 node data;
@@ -509,7 +588,7 @@ class skiplist {
         struct subtree{
             //--------------------------subtree operation--------------------------//
             inline int predict(K key){
-                double v = this->slope * (static_cast<long double>(key)-static_cast<long double>(this->start)) + this->intercept;
+                double v = this->slope * (static_cast<long double>(key)) + this->intercept;//-static_cast<long double>(this->start)
                 // if (std::isnan(v)){
                 // 	return this->num_items - 1;
                 // }
@@ -525,7 +604,11 @@ class skiplist {
             std::pair<unsigned int,unsigned int> computeRange(int pos){
                 unsigned int start_ = (pos - this->intercept)/(this->slope * 1000.0)*1000.0;
                 unsigned int stop_ = (pos+1 - this->intercept)/(this->slope * 1000.0)*1000.0;
-                return {start_+this->start,stop_+this->start};
+                if(pos == 0)
+                    start_ = this->start;
+                if(pos == this->num_items-1)
+                    stop_ = this->stop;
+                return {start_,stop_};//+this->start
             }
 
             std::pair<bool,V> find_key_in_subtree(K key){
@@ -641,6 +724,7 @@ class skiplist {
             std::mutex *mlock = nullptr;
             bitmap_t* none_bitmap = nullptr; // 1 means None, 0 means Data or Child
             bitmap_t* child_bitmap = nullptr; // 1 means Child. will always be 0 when none_bitmap is 1
+            //HashTable TopK;//a hash table stored topk
         };
         struct Segment_pt: SNode{
             //--------------------------allocator---------------------------//
@@ -654,6 +738,8 @@ class skiplist {
                 return nullptr;
             }
             void delete_subtree(subtree* x,int n){
+                // delete[] x->TopK.count_;
+                // delete[] x->TopK.index_;
                 subtree_allocator.deallocate(x,n);
             }
             void destroy_subtree(subtree* root){
@@ -728,6 +814,7 @@ class skiplist {
                 BITMAP_SET(n->none_bitmap, 0);
                 n->child_bitmap = new_bitmap(1);
                 n->child_bitmap[0] = 0;
+                // n->TopK.Create(10);
                 return n;
             }
 
@@ -752,6 +839,7 @@ class skiplist {
                 BITMAP_SET(n->none_bitmap, 0);
                 n->child_bitmap = new_bitmap(1);
                 n->child_bitmap[0] = 0;
+                // n->TopK.Create(10);
                 return n;
             }
 
@@ -779,6 +867,7 @@ class skiplist {
                     n->child_bitmap = new_bitmap(1);
                     n->none_bitmap[0] = 0xff;
                     n->child_bitmap[0] = 0;
+                    // n->TopK.Create(10);
                 }else{
                     n = tree_pool.top();
                     tree_pool.pop();
@@ -794,8 +883,8 @@ class skiplist {
                     n->stop = x->stop;//min(x->stop,2*key2-key1);
                 }
                 
-                const long double mid1_key = static_cast<long double>(key1)-static_cast<long double>(n->start);
-                const long double mid2_key = static_cast<long double>(key2)-static_cast<long double>(n->start);
+                const long double mid1_key = static_cast<long double>(key1);//-static_cast<long double>(n->start)
+                const long double mid2_key = static_cast<long double>(key2);//-static_cast<long double>(n->start)
 
                 const double mid1_target = n->num_items / 3;
                 const double mid2_target = n->num_items * 2 / 3;
@@ -814,6 +903,7 @@ class skiplist {
                     BITMAP_CLEAR(n->none_bitmap, pos);
                     n->items[pos].comp.data.key = key1;
                     n->items[pos].comp.data.value = value1;
+                    // n->TopK.Update(pos,1);
                 }
                 { // insert key2&value2
                     int pos = n->predict(key2);
@@ -821,6 +911,7 @@ class skiplist {
                     BITMAP_CLEAR(n->none_bitmap, pos);
                     n->items[pos].comp.data.key = key2;
                     n->items[pos].comp.data.value = value2;
+                    // n->TopK.Update(pos,1);
                 }
                 RT_ASSERT(n!=NULL);
 
@@ -837,7 +928,7 @@ class skiplist {
                 return DataArray->find_key_in_subtree(key);
             }
         
-            void insert_subtree(K key,V value,subtree* path[],int &path_size){
+            void insert_subtree(K key,V value,subtree* path[],int &path_size,long long &collision){
                 subtree* n = DataArray;//此时不会变动dataarray
                 int pos = n->predict(key);
                 StateType state_raw;
@@ -861,6 +952,7 @@ class skiplist {
                         n->items[pos].comp.data.key = key;
                         n->items[pos].comp.data.value = value;
                         n->size.fetch_add(1, std::memory_order_acquire);
+                        // n->TopK.Update(pos,1);
                         n->mlock->unlock();
                         break;
                     }else if(state_raw == ItemState::Element){
@@ -886,6 +978,7 @@ class skiplist {
                             BITMAP_SET(n->child_bitmap, pos);
                             n->items[pos].comp.child = next_subtree;
                             n->size.fetch_add(1, std::memory_order_acquire);
+                            // n->TopK.Update(pos,2);
                             n->confliction++;
                             #if INSERT_ROUTE
                             if(path_size == path_capacity){
@@ -896,6 +989,7 @@ class skiplist {
                             #endif
                             path_size++;
                             n->mlock->unlock();
+                            collision++;
                             break;
                         }
                     }else{//ItemState::Subtree
@@ -905,9 +999,11 @@ class skiplist {
                         int next_pos = next_n->predict(key);
                         next_n->mlock->lock();
                         state_raw = BITMAP_GET(next_n->none_bitmap, next_pos) == 1?0:BITMAP_GET(next_n->child_bitmap, next_pos)+1;
+                        // n->TopK.Update(pos,1+next_n->size.load(std::memory_order_acquire));
                         n->mlock->unlock();
                         n = next_n;
                         pos = next_pos;
+                        collision++;
                     }
                 }
             }
@@ -975,6 +1071,7 @@ class skiplist {
                             memset(n->items,0,(n->num_items)*sizeof(Item));
                             n->none_bitmap[0] = 0xff;
                             n->child_bitmap[0] = 0;
+                            // n->TopK.Init();
                             while(!CASPool()){;}
                             tree_pool.push(n);
                             ReleasePool();
@@ -1060,11 +1157,14 @@ class skiplist {
                             RT_ASSERT(0 <= mid1_pos);
                             RT_ASSERT(mid1_pos < mid2_pos);
                             RT_ASSERT(mid2_pos < size - 1);
-
                             const long double mid1_key =
-                                    (static_cast<long double>(keys[mid1_pos])-static_cast<long double>(n->start) + static_cast<long double>(keys[mid1_pos + 1])-static_cast<long double>(n->start) ) / 2;
+                                    (static_cast<long double>(keys[mid1_pos]) + static_cast<long double>(keys[mid1_pos + 1]) ) / 2;
                             const long double mid2_key =
-                                    (static_cast<long double>(keys[mid2_pos]) -static_cast<long double>(n->start)+ static_cast<long double>(keys[mid2_pos + 1]) -static_cast<long double>(n->start)) / 2;
+                                    (static_cast<long double>(keys[mid2_pos]) + static_cast<long double>(keys[mid2_pos + 1]) ) / 2;
+                            // const long double mid1_key =
+                            //         (static_cast<long double>(keys[mid1_pos])-static_cast<long double>(n->start) + static_cast<long double>(keys[mid1_pos + 1])-static_cast<long double>(n->start) ) / 2;
+                            // const long double mid2_key =
+                            //         (static_cast<long double>(keys[mid2_pos]) -static_cast<long double>(n->start)+ static_cast<long double>(keys[mid2_pos + 1]) -static_cast<long double>(n->start)) / 2;
 
                             n->num_items = size * static_cast<int>(BUILD_GAP_CNT + 1);
                             
@@ -1085,6 +1185,7 @@ class skiplist {
                         n->items = new_items(n->num_items);
                         memset(n->items,0,n->num_items*sizeof(Item));
                         n->mlock = new mutex();
+                        // n->TopK.Create(10);
                         const int bitmap_size = BITMAP_SIZE(n->num_items);
                         n->none_bitmap = new_bitmap(bitmap_size);
                         n->child_bitmap = new_bitmap(bitmap_size);
@@ -1111,6 +1212,7 @@ class skiplist {
                                 BITMAP_CLEAR(n->none_bitmap, item_i);
                                 n->items[item_i].comp.data.key = keys[offset];
                                 n->items[item_i].comp.data.value = values[offset];
+                                // n->TopK.Update(item_i,1);
                             } else {
                                 // ASSERT(next - offset <= (size+2) / 3);
                                 RT_ASSERT(BITMAP_GET(n->none_bitmap,item_i) == 1);
@@ -1125,6 +1227,7 @@ class skiplist {
                                 real_put_ele+=(next-offset);
                                 n->confliction+=(next-offset-1);
                                 s.push({begin + offset, begin + next, lvl + 1, n->items[item_i].comp.child});
+                                // n->TopK.Update(item_i,next-offset);
                             }
                             if (next >= size) {
                                 break;
@@ -1153,6 +1256,7 @@ class skiplist {
                     n->items = new_items(n->num_items);
                     memset(n->items,0,(n->num_items)*sizeof(Item));
                     n->mlock = new mutex();
+                    // n->TopK.Create(10);
                     n->none_bitmap = new_bitmap(1);
                     n->child_bitmap = new_bitmap(1);
                     n->none_bitmap[0] = 0xff;
@@ -1176,12 +1280,24 @@ class skiplist {
             inline void ReleasePool(){
                 lock_pool.store(false, std::memory_order_release);
             }
+            
+            //第一次建模/每一次rebuild/split都重新设置segment max size
+            void SetSegMax(int slot_,int esize,unsigned int key_space){
+                SegmentMaxSize = ComputeSegmentMaxSize(slot_,esize,key_space);
+                #if SHOWBLOCK
+                std::cout<<"slot:"<<slot_<<"\tSegmentMaxSize:"<<SegmentMaxSize<<std::endl;
+                #endif
+                // std::cout<<"SegmentMaxSize:"<<SegmentMaxSize<<"\tslot:"<<slot_<<"\tkey_space"<<key_space<<std::endl;
+            }
+
             K bound;//right guard,the upper bound
             int level;
             subtree *DataArray;
             Semaphore delta_inserts;
+            int SegmentMaxSize;
             std::atomic<bool> lock_pool;
             std::stack<subtree*> tree_pool;
+            
             Segment_pt(K base,K bnd,int lvl,int deta_insert_init = DETA_INSERT,int upbound_ = DETA_INSERT):SNode(base,false),bound(bnd),level(lvl),
             delta_inserts(Semaphore(deta_insert_init,upbound_)),lock_pool(false){}
         };
@@ -1259,26 +1375,14 @@ class skiplist {
                                                             //then set deta_insert = 2,else set deta_insert = DETA_INSERT
             }
             else{
-                 #if INCREASE_MODEL == 1
-                    int count_set  = min(int(slots*W),(int)DETA_INSERT);
-                    int threshold_set = min(int(slots*Q),(int)DETA_INSERT);
-                    newseg = new Segment_pt(base,bound,level,count_set,threshold_set);
-                #elif INCREASE_MODEL == 2
-                    if(slots*W < DETA_INSERT)
-                        newseg = new Segment_pt(base,bound,level,slots*W,min(int(slots*Q),int(DETA_INSERT)));
-                    else
-                        newseg = new Segment_pt(base,bound,level);
-                #elif INCREASE_MODEL == 3
-                    int count_set = min(int(slots*W), (int)DETA_INSERT);
-                    newseg = new Segment_pt(base,bound,level,count_set,DETA_INSERT);
-                #elif INCREASE_MODEL == 4
-                    int count_set = slots*W<DETA_INSERT ? slots : DETA_INSERT;
-                    newseg = new Segment_pt(base,bound,level,count_set,DETA_INSERT);
-                #endif
+                int seg_max_size = ComputeSegmentMaxSize(slots,ele_size,bound - base);
+                int count_set = ComputeNextCount(seg_max_size,ele_size,slots);
+                newseg = new Segment_pt(base,bound,level,count_set,DETA_INSERT);
             }
             reinterpret_cast<Segment_pt*>(newseg)->DataArray = n;
             reinterpret_cast<Segment_pt*>(newseg)->CreateMemPool();
             reinterpret_cast<Segment_pt*>(newseg)->SetNext(nullptr);
+            reinterpret_cast<Segment_pt*>(newseg)->SetSegMax(slots,ele_size,bound - base);
             return newseg;
         }
         
@@ -1289,29 +1393,10 @@ class skiplist {
             reinterpret_cast<Segment_pt*>(newseg)->DataArray =  reinterpret_cast<Segment_pt*>(newseg)->build_tree_none(base,bound);
             // reinterpret_cast<Segment_pt*>(newseg)->InitSplit();
             reinterpret_cast<Segment_pt*>(newseg)->SetNext(nullptr);
+            reinterpret_cast<Segment_pt*>(newseg)->SetSegMax(8,0,bound - base);//build_tree_none待定
             return newseg;
         }
         
-        //create tree_two pool of segment
-        // inline void CreatePool(subtree *parent,int pool_size=500){
-        //     for(int i = 0;i<pool_size;i++){
-        //         subtree *n = new_subtree(1);
-        //         n->is_two = 1;
-        //         n->build_size = 2;
-        //         n->size.store(2, std::memory_order_release);
-        //         n->fixed = 0;
-        //         n->confliction = 0;
-        //         n->num_items = 8;
-        //         n->items = new_items(n->num_items);
-        //         memset(n->items,0,(n->num_items)*sizeof(Item));
-        //         n->mlock = new mutex();
-        //         n->none_bitmap = new_bitmap(1);
-        //         n->child_bitmap = new_bitmap(1);
-        //         n->none_bitmap[0] = 0xff;
-        //         n->child_bitmap[0] = 0;
-        //         parent->pool_tree_two.push(n);
-        //     }
-        // }
 
         //--------------------------new index--------------------------//
         
@@ -1492,7 +1577,7 @@ class skiplist {
         }
 
         //skiplist add a key 
-        bool Add(K key,V value,int &path_depth){
+        bool Add(K key,V value,int &path_depth,long long &scan_time,int &split_cnt,long long &collision){
             SNode* preds[MaxLevel+1];
             for(int i =0;i<=MaxLevel;i++){
                 preds[i] = nullptr;
@@ -1511,7 +1596,7 @@ class skiplist {
                     int state = locate->delta_inserts.Wait();
                     // locate->ExclusiveLock();
                     if(key < locate->bound){
-                        return Add_key_in_Segment(key,value,preds,locate,state,path_depth);//will ReleaseExclusive and finish operations on delta_inserts and work_threads
+                        return Add_key_in_Segment(key,value,preds,locate,state,path_depth,scan_time,split_cnt,collision);//will ReleaseExclusive and finish operations on delta_inserts and work_threads
                         // return false;
                     }
                     // locate->ReleaseExclusive();
@@ -1537,7 +1622,7 @@ class skiplist {
         }
 
         //add a key-value into segment_pt
-        bool Add_key_in_Segment(K key,V value,SNode** preds,Segment_pt* locate,int state,int &insert_depth){
+        bool Add_key_in_Segment(K key,V value,SNode** preds,Segment_pt* locate,int state,int &insert_depth,long long &scan_time,int &split_cnt,long long &collision){
             #if INSERT_ROUTE
             subtree* path[MAX_DEPTH*2];
             #else
@@ -1552,7 +1637,7 @@ class skiplist {
                     flag = 1;
                 }
             }
-            locate->insert_subtree(key,value,path,path_size);
+            locate->insert_subtree(key,value,path,path_size,collision);
             insert_depth = path_size;
             #if INSERT_ROUTE
             delete path;
@@ -1560,8 +1645,16 @@ class skiplist {
             subtree *n = locate->DataArray;
             if(flag){
                 //flag = 1,means state = 0 and the size of n <=2 after insert_subtree, DataArray was updated
+                int new_size = n->size.load(std::memory_order_acquire);
+                int new_slot_ = n->num_items;
+                int key_space = n->stop - n->start;
+                locate->SetSegMax(new_slot_,new_size, key_space);
+                int new_segment_max_size = locate->SegmentMaxSize;
                 locate->delta_inserts.SignalWork();
-                locate->delta_inserts.SignalAll(locate->DataArray->num_items);//wake up blocked threads
+                #if SHOWBLOCK
+                std::cout<<"rebuild model\t";
+                #endif
+                locate->delta_inserts.SignalAll(new_segment_max_size,new_size,new_slot_);//wake up blocked threads
                 return false;
             }
             const bool need_rebuild = ( state == 0);
@@ -1572,61 +1665,462 @@ class skiplist {
             }else{
                 locate->delta_inserts.WaitWork();//wait working threads before this
                 const int ESIZE = n->size.load(std::memory_order_acquire);
-                K* keys = new K[ESIZE];
-                V* values = new V[ESIZE];
-                unsigned int n_start = n->start,n_stop = n->stop;
-                //TODO:test
-                // if((res.first < linearity )|| ESIZE >= segment_max_size )
-                if(ESIZE >= segment_max_size){//split
+                int new_segment_max_size = locate->SegmentMaxSize;
+                int n_slots = n->num_items;
+                const int REBUILD_SIZE = 64;
+                const int SLOTS_ = 256;
+                if(ESIZE < REBUILD_SIZE){
+                    locate->delta_inserts.SignalWork();
+                    //TODO:强制增大count
+                    locate->delta_inserts.SignalAll(new_segment_max_size,ESIZE,SLOTS_);//wake up blocked threads
+                    return false;
+                }
+                const auto start_time = std::chrono::steady_clock::now();
+                if(ESIZE >= new_segment_max_size ){//split
+                    K* keys = new K[ESIZE];
+                    V* values = new V[ESIZE];
+                    unsigned int n_start = n->start,n_stop = n->stop;
+                    // SplitSegmentNoScan(locate,preds,ESIZE,n_start,n_stop);
                     locate->scan_and_destroy_subtree(n,keys,values,ESIZE);//std::pair<long double,int> res = 
                     locate->DataArray = nullptr;
+                    // std::cout<<ESIZE<<",\t"<<n_slots<<std::endl;
                     SplitSegment(locate,preds,keys,values,ESIZE,n_start,n_stop);
                     //SplitSegment already released the write lock of locate
+                    int new_slot = locate->DataArray->num_items;
+                    int new_size = locate->DataArray->size.load(std::memory_order_acquire);
+                    new_segment_max_size = locate->SegmentMaxSize;
+                    delete[] keys;
+                    delete[] values;
+                    split_cnt++;
+                    const auto end_time = std::chrono::steady_clock::now();
+                    const auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
+                    locate->delta_inserts.SignalWork();
+                    #if SHOWREBUILD
+                    std::cout<<std::to_string(duration.count())<<std::endl;
+                    #endif
+                    locate->delta_inserts.SignalAll(new_segment_max_size,new_size,new_slot);//wake up blocked threads
+                    scan_time+=duration.count();
+                    // std::cout<<n_start<<"\t"<<n_stop<<"\t"<<locate->DataArray->stop<<endl;
+                    return false;
                 }else{
-                    #if 0
-                    if(!(n->fixed)){//rebuild the whole segment
-                    #endif
-                        locate->scan_and_destroy_subtree(n,keys,values,ESIZE);//std::pair<long double,int> res = 
-                        locate->DataArray = nullptr;
-                        std::pair<subtree*,int> res_ = locate->rebuild_tree(keys,values,ESIZE,n_start,n_stop);
-                        locate->DataArray = res_.first;
-                    #if 0
-                    }else{
-                        // std::cout<<"fixed...partial rebuild...\n";
-                        // string strs = to_string(n->num_items)+"\t";
-                        // std::cout<<strs;
-                        for(int i = 0; i < n->num_items;i++){
-                            if(BITMAP_GET(n->none_bitmap, i) == 0 && BITMAP_GET(n->child_bitmap, i) == 1){
-                                const int sub_size = n->items[i].comp.child->size.load(std::memory_order_acquire);
-                                double rate = sub_size*1.0/n->items[i].comp.child->num_items;
-                                //大部分都是个位数
-                                if(sub_size > 256 || rate > 4.0){
-                                    // string strs = std::to_string(sub_size)+"@"+to_string(n->items[i].comp.child->num_items)+"\t";
-                                    // std::cout<<strs;
-                                    n_start = n->items[i].comp.child->start;
-                                    n_stop = n->items[i].comp.child->stop;
-                                    n->items[i].comp.child->scan_and_destroy_subtree(n->items[i].comp.child,keys,values,sub_size);//std::pair<long double,int> res = 
-                                    std::pair<subtree*,int> res_ = n->items[i].comp.child->rebuild_tree(keys,values,sub_size,n_start,n_stop);
-                                    n->items[i].comp.child = res_.first;
-                                }
-                            }
-                        }
+                    //rebuild每次将深度的树展开成扁平的数组，是否会影响并发性能
+                    // if(ESIZE > 2e5){
+                    //     locate->delta_inserts.SignalWork();
+                    //     #if SHOWBLOCK
+                    //     const auto end_time = std::chrono::steady_clock::now();
+                    //     const auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
+                    //     std::cout<<"no build\t"<<std::to_string(duration.count())<<"\t";
+                    //     #endif
+                    //     locate->delta_inserts.SignalAll(new_segment_max_size,ESIZE,n_slots);//wake up blocked threads
+                    //     return false;
+                    // }
+                    //TODO sum_of_top_k 若低于NOREBUILD_th 则不rebuild
+                    #if TOPK_BUILD
+                    const int n_Top = 10;//max(10,int(n->num_items * 0.01));
+                    int *Top_k_pos = new int[n_Top];
+                    int *Top_k_size = new int[n_Top];
+                    int cnt_ = 0;
+                    // std::pair<int,int> TopK_res = n->TopK.SumUP();
+                    // double sum_topk = TopK_res.first*1.0 / ESIZE;
+                    double sum_topk = GetTopk(n_Top,ESIZE,n_slots,n,NOREBUILD_th,Top_k_pos,Top_k_size,cnt_,scan_time);
+                    // std::cout<<sum_topk<<std::endl;
+                    if(sum_topk < NOREBUILD_th){
+                        delete[] Top_k_pos;
+                        delete[] Top_k_size;
+                        locate->delta_inserts.SignalWork();
+                        //激进的插入
+                        const int next_count = n_slots; 
+                        locate->delta_inserts.SignalAll(new_segment_max_size,ESIZE,next_count);//wake up blocked threads
+                        return false;
                     }
+                    delete[] Top_k_pos;
+                    delete[] Top_k_size;
                     #endif
+                    K* keys = new K[ESIZE];
+                    V* values = new V[ESIZE];
+                    unsigned int n_start = n->start,n_stop = n->stop;
+                    locate->scan_and_destroy_subtree(n,keys,values,ESIZE);//std::pair<long double,int> res = 
+                    locate->DataArray = nullptr;
+                    std::pair<subtree*,int> res_ = locate->rebuild_tree(keys,values,ESIZE,n_start,n_stop);
+                    locate->DataArray = res_.first;
+                    int new_slot = locate->DataArray->num_items;
+                    // std::cout<<ESIZE<<"\t"<<ESIZE*1.0/n_slots<<"\tafter rebuild:"<<ESIZE*1.0/new_slot<<std::endl;
+                    locate->SetSegMax(new_slot,ESIZE,n_stop - n_start);
+                    delete[] keys;
+                    delete[] values;
+                    const auto end_time = std::chrono::steady_clock::now();
+                    const auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
+                    new_segment_max_size = locate->SegmentMaxSize;
+                    locate->delta_inserts.SignalWork();
+                    #if SHOWREBUILD
+                    std::cout<<"rebuild new_segment_max_size:\t"<<new_segment_max_size<<"\t"<<duration.count()<<std::endl;
+                    #endif
+                    locate->delta_inserts.SignalAll(new_segment_max_size,ESIZE,new_slot);//wake up blocked threads
+                    scan_time+=duration.count();
+                    return true;
                 }
-                int esize = locate->DataArray->num_items;
-                delete[] keys;
-                delete[] values;
-                locate->delta_inserts.SignalWork();
-                locate->delta_inserts.SignalAll(esize);//wake up blocked threads
-                return true;
             }
             return false;
         }
 
+        double GetTopk(const int TOPK,const int ESIZE,const int n_slots,subtree *n,const double sum_k,int *Top_k_pos,int *Top_k_size,int &cnt_,long long &scan_time){
+            struct pos{
+                int x,y;//x,index;y,esize
+                pos(){}
+                pos(int x,int y):x(x),y(y){}
+                bool operator< (const pos &a)const {
+                    return y < a.y;
+                }
+            };
+            struct cmp
+            {
+                bool operator()(const pos &a,const pos &b)
+                {
+                    return a.y < b.y;
+                }
+            };
+            priority_queue<pos,vector<pos>,cmp > top_k_set;
+            const auto start_time = std::chrono::steady_clock::now();
+            // int TOPK = 10;
+            // vector<double> distribution(n_slots);
+            for(int i = 0;i<n_slots;i++){
+                if(BITMAP_GET(n->none_bitmap,i) == 0){
+                    if(BITMAP_GET(n->child_bitmap,i) == 1){
+                        int num_ = n->items[i].comp.child->size.load(std::memory_order_acquire);
+                        if(top_k_set.size() == TOPK){
+                            if(top_k_set.top().y < num_){
+                                top_k_set.pop();
+                                top_k_set.push({i,num_});
+                            }
+                        }else{
+                            top_k_set.push({i,num_});
+                        }
+                        // distribution[i] = num_*1.0/ESIZE;
+                    }
+                }
+            }
+            // sort(distribution.begin(),distribution.end(),greater<double>());
+            double sum_topk = 0;
+            // for(int i = 0;i<min(n_slots,TOPK);i++){
+            //     sum_topk+=distribution[i];
+            // }
+            cnt_ = 0;
+            int sum_esize = 0;
+            while(!top_k_set.empty()){
+                Top_k_pos[cnt_] = top_k_set.top().x;
+                Top_k_size[cnt_] = top_k_set.top().y;
+                sum_esize+=top_k_set.top().y;
+                cnt_++;
+                top_k_set.pop();
+            }
+            sum_topk = sum_esize*1.0/ESIZE;
+            const auto end_time = std::chrono::steady_clock::now();
+            const auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
+            scan_time+=duration.count();
+            #if OUTPUT_TOPK
+            string out = std::to_string(n->start)+"\ttotal size:"+std::to_string(ESIZE)+
+                "\ttotal slots:"+std::to_string(n->num_items) + "\ttop10 sum:"+std::to_string(sum_topk)+"\n";
+            std::cout<<out;
+            // for(int i = 0;i<min(TOPK,n_slots);i++){
+            //     out+="\t";
+            //     out+=(std::to_string(distribution[i]));
+            // }
+            #endif
+            // std::cout << "overhead of scan top array:" << duration.count() << "us"<<std::endl;
+            return sum_topk;
+        }
+
+        bool SplitSegmentNoScan(Segment_pt *root,SNode** preds,const int ESIZE,K _start,K _stop){
+            struct Seg{
+                int begin;
+                int height;
+                subtree *array;
+            };
+            std::stack<Seg> s;
+            subtree *head_prepare = nullptr;
+            subtree *tail_prepare = nullptr;
+            int keylen = ESIZE;
+            const int n_slot = root->DataArray->num_items;
+            int seg_size = 0;
+            //1. partition array
+            //get head tail
+            if(BITMAP_GET(root->DataArray->none_bitmap,0) == 0){
+                if(BITMAP_GET(root->DataArray->child_bitmap,0) == 1){
+                    int num_ = root->DataArray->items[0].comp.child->size.load(std::memory_order_acquire);
+                    if(num_ > 1e2){
+                        head_prepare = root->DataArray->items[0].comp.child;
+                        keylen-=num_;
+                        seg_size++;
+                    }
+                }
+            }
+            if(BITMAP_GET(root->DataArray->none_bitmap,n_slot-1) == 0){
+                if(BITMAP_GET(root->DataArray->child_bitmap,n_slot-1) == 1){
+                    int num_ = root->DataArray->items[n_slot-1].comp.child->size.load(std::memory_order_acquire);
+                    if(num_ > 1e2){
+                        tail_prepare = root->DataArray->items[n_slot-1].comp.child;
+                        keylen-=num_;
+                        seg_size++;
+                    }
+                }
+            }
+            RT_ASSERT(keylen > 0);
+            K *keys = new K[keylen];
+            V * values = new V[keylen];
+            s.push({0,0, root->DataArray});
+            while (!s.empty()) {
+                int begin = s.top().begin;
+                int height = s.top().height;
+                subtree* n = s.top().array;
+                s.pop();
+                for (int i = 0; i < n->num_items;i++) {
+                    if(i == 0 && height == 0 && head_prepare != nullptr){
+                        continue;
+                    }
+                    if(i == n->num_items-1 && height == 0 && tail_prepare != nullptr){
+                        continue;
+                    }
+                    int none_byte = n->none_bitmap[i/BITMAP_WIDTH];
+                    if(none_byte == 0xff){
+                        i+=7;
+                        continue;
+                    }else if (((none_byte >> ((i) % BITMAP_WIDTH)) & 1) == 0) {
+                        if (BITMAP_GET(n->child_bitmap, i) == 0) {
+                            keys[begin] = n->items[i].comp.data.key;
+                            values[begin] = n->items[i].comp.data.value;
+                            begin ++;
+                        } else {
+                            s.push({begin,height+1,n->items[i].comp.child});
+                            begin += n->items[i].comp.child->size.load(std::memory_order_acquire);
+                        }
+                    }
+                }
+                if(n->is_two){
+                    n->build_size = 2;
+                    n->size.store(2, std::memory_order_release);
+                    n->fixed = 0;
+                    n->confliction = 0;
+                    n->num_items = 8;
+                    memset(n->items,0,(n->num_items)*sizeof(Item));
+                    n->none_bitmap[0] = 0xff;
+                    n->child_bitmap[0] = 0;
+                    // n->TopK.Init();
+                    while(!root->CASPool()){;}
+                    root->tree_pool.push(n);
+                    root->ReleasePool();
+                }else{
+                    root->delete_items(n->items, n->num_items);
+                    const int bitmap_size = BITMAP_SIZE(n->num_items);
+                    root->delete_bitmap(n->none_bitmap, bitmap_size);
+                    root->delete_bitmap(n->child_bitmap, bitmap_size);
+                    root->delete_subtree(n, 1);
+                }
+            }
+        
+            int st = 0,ed =0;//the rank of the first/last+1 ele of one segment
+            GreedyPLR* plr = new GreedyPLR(gamma);
+            vector<Segment*> seg;
+            vector<int> segment_stIndex;
+            for (int i = 0; i < keylen; i++) {
+                Segment* seg_res = nullptr;
+                seg_res = plr->Process(static_cast<double>(keys[i])-static_cast<double>(keys[st]), static_cast<double>(i-st));
+                if(seg_res) {
+                    segment_stIndex.push_back(st);
+                    seg.push_back(seg_res);
+                    st = ed = i;
+                }
+                else{
+                    ed = i;
+                }
+            }
+            Segment* seg_res = nullptr;
+            seg_res = plr->finish();
+            if (seg_res) {
+                segment_stIndex.push_back(st);
+                seg.push_back(seg_res);
+            }
+
+            //2. generate segments group
+            int segment_max_height = 1;//the max height of split segment[]
+            seg_size += static_cast<int>(seg.size());
+            
+            //create new segment and index
+            vector<Segment_pt*> split_segments(seg_size);//store the all segment_pt
+            vector<SNode*> SNode_inner_pred(MaxLevel+1,nullptr);//段group当前右边界
+            vector<SNode*> SNode_left(MaxLevel+1,nullptr);//段group左边界
+            vector<SNode*> SNode_right(MaxLevel+1,nullptr);//段group右边界
+            split_segments[0] = root;
+            subtree *root_dataarray = nullptr;
+            unsigned int split_lower_bound = 0;
+            // std::cout<<"split range:"<<_start<<"\t"<<_stop<<std::endl;
+            for(int i = 0,j = 0 ;i < seg_size ; i++) {
+                int height_tmp=1;
+                int st=segment_stIndex[j],ed;//st ed代表keys下标
+                unsigned int base,bound;
+                subtree* new_subtree = nullptr;
+                if(i == 0 && head_prepare){
+                    new_subtree = head_prepare;
+                    base = new_subtree->start,bound = new_subtree->stop;
+                }else if(i == seg_size-1 && tail_prepare){
+                    new_subtree = tail_prepare;
+                    base = new_subtree->start;//keys[keylen-1]
+                    bound = new_subtree->stop;
+                    height_tmp = RandLevel();
+                    segment_max_height = max(segment_max_height,height_tmp);
+                }else{
+                    if(i == 0){
+                        base = _start;//as head,no head_prepare
+                    }else{//middle segment
+                        height_tmp = RandLevel();
+                        segment_max_height = max(segment_max_height,height_tmp);
+                        if(i == 1 &&head_prepare){
+                            base = head_prepare->stop;
+                        }else{
+                            base  = keys[st];
+                        }
+                    }
+
+                    if(i == seg_size-1){//as tail,no tail_prepare
+                        ed = keylen;
+                        bound = _stop;
+                    }else{//middle segment,maybe exsit tail_prepare
+                        if(j+1 == segment_stIndex.size()){
+                            ed = keylen-1;
+                            bound = tail_prepare->start;
+                        }else{
+                            ed = segment_stIndex[j+1];
+                            bound = keys[ed];
+                        }
+                    }
+                    j++;
+
+
+                    if(ed-st == 1){
+                        new_subtree = root->build_tree_none(base,bound);
+                        BITMAP_CLEAR(new_subtree->none_bitmap,0);
+                        new_subtree->size.store(1, std::memory_order_release);
+                        new_subtree->items[0].comp.data.key = keys[st];
+                        new_subtree->items[0].comp.data.value = values[st];
+                    }else{
+                        std::pair<subtree*,int> res_;
+                        #if USEPLR
+                        if(seg[i]->slope > 0)
+                            res_ = root->rebuild_tree(keys+st,values+st,ed-st,base,bound,true,seg[i]->slope,seg[i]->intercept);
+                        else
+                            res_ = root->rebuild_tree(keys+st,values+st,ed-st,base,bound);
+                        #else
+                            res_ = root->rebuild_tree(keys+st,values+st,ed-st,base,bound);
+                        #endif
+                        new_subtree = res_.first;
+                    }
+                }
+                
+                //2.4 create segment ,index without data and link inner part
+                SNode* next_seg = nullptr;//the bottom segment_pt
+                // SNode* top_index = nullptr;//the top level of index
+                vector<SNode*> SNodeArray(height_tmp+1,nullptr);
+                if(i){
+                    //create index array(stored in SNodeArray) with subtree
+                    NewIndexArrayWithData(height_tmp,base,bound,new_subtree,SNodeArray);
+                    next_seg = SNodeArray[0];
+                    split_segments[i] = reinterpret_cast<Segment_pt*>(next_seg);//store segment in split_segments
+                    reinterpret_cast<Segment_pt*>(next_seg)->delta_inserts.AddWork();//限制split
+                    //2.5.1 link segment_pt if pre_segment exsits
+                    if(SNode_inner_pred[0]){
+                        reinterpret_cast<Segment_pt*>(SNode_inner_pred[0])->SetNext(next_seg);//no need to loop   
+                    }
+                    SNode_inner_pred[0] = next_seg;
+                    if(i == 1)
+                        SNode_left[0] = next_seg;
+                    SNode_right[0] = next_seg;
+                    //link [height_tmp,0) index if pre_segment exsits
+                    for(int l = height_tmp;l>0;l--){
+                        SNode* pr_ = SNodeArray[l];//get the l level index 
+                        // reinterpret_cast<Index*>(pr_)->SetNext(nullptr);//this step finished in NewIndexArrayWithData  function
+                        if(SNode_inner_pred[l]){
+                            reinterpret_cast<Index*>(SNode_inner_pred[l])->SetNext(pr_);//no need to loop
+                            SNode_inner_pred[l] = pr_;
+                        }else{
+                            SNode_inner_pred[l] = pr_;
+                            SNode_left[l] = pr_;
+                        }
+                        SNode_right[l] = pr_;
+                    }
+                }else{
+                    root_dataarray = new_subtree;
+                    split_lower_bound = bound;
+                    root->SetSegMax(new_subtree->num_items,new_subtree->size.load(std::memory_order_acquire),bound - base);
+                }
+            }
+
+            if(seg_size == 1){
+                root->DataArray = root_dataarray;
+                delete plr;
+                #if SHOWREBUILD
+                std::cout<<_size<<" split new segment number:"<<seg_size-1<<"\t";
+                #endif
+                return true;
+            }else{
+                //link the bottom(segment_pt)
+                reinterpret_cast<Segment_pt*>(SNode_right[0])->SetNext(root->Next());//the right link
+                // split_segments[seg_size-1]->SetNext(root->Next());
+                root->SetNext(SNode_left[0]);//the left link
+                //2.7 update root(segment_pt)
+                root->bound = split_lower_bound;
+                root->DataArray = root_dataarray;
+                //2.8 release the write lock of the new segment
+                // for(int i = 1;i<seg_size;i++){
+                //     split_segments[i]->ReleaseExclusive();
+                //     #if DEBUG
+                //     cerr<<"Release "<<split_segments[i]<<endl;
+                //     #endif
+                // }
+                //2.9 update maxheight
+                int max_height = GetMaxHeight();
+                while (segment_max_height > max_height) {
+                    if (max_height_.compare_exchange_weak(max_height, segment_max_height)) {
+                        // successfully updated it
+                        max_height = segment_max_height;
+                        break;
+                    }
+                }
+
+                //2.10 insert index from 1 to segment_max_height, reusing the information of preds array 
+                SNode *pred = nullptr;
+                SNode *curr = nullptr;
+                SNode *succ = nullptr;
+                for(int i = 1;i<=segment_max_height;i++){
+                    pred = preds[i];
+                    //move forward
+                    curr = pred->Next();
+                    succ = curr->Next();
+                    while(succ && succ->Key <= split_lower_bound){
+                        pred = curr;
+                        curr = succ;
+                        succ = succ->Next();
+                    }
+                    if(split_lower_bound >= curr->Key){
+                        pred = curr;
+                    }
+                    if(SNode_left[i]){
+                        reinterpret_cast<Index*>(pred)->AppendNext(SNode_left[i],SNode_right[i]);
+                    }
+                }
+                //2.11 release the split locks of segment group 
+                for(int i = 1;i<seg_size;i++){
+                    split_segments[i]->delta_inserts.SignalWork();
+                }
+                delete plr;
+                // std::cout<<"raw size:"<<_size<<"key_space:"<<_start<<","<<_stop<<" split new segment number:"<<seg_size-1<<std::endl;
+                #if SHOWREBUILD
+                std::cout<<_size<<" split new segment number:"<<seg_size-1<<"\t";
+                #endif
+                return true;
+            }       
+        }
+
         bool SplitSegment(Segment_pt *root,SNode** preds,K *_keys,int*  _values,int _size,K _start,K _stop){
             //1. partition array
-            // std::cout<<"split\n";
             int st = 0,ed =0;//the rank of the first/last+1 ele of one segment
             GreedyPLR* plr = new GreedyPLR(gamma);
             vector<Segment*> seg;
@@ -1756,6 +2250,7 @@ class skiplist {
                 }else{
                     root_dataarray = new_subtree;
                     split_lower_bound = bound;
+                    root->SetSegMax(new_subtree->num_items,new_subtree->size.load(std::memory_order_acquire),bound - base);
                 }
                   
             }
@@ -1763,6 +2258,9 @@ class skiplist {
             if(seg_size == 1){
                 root->DataArray = root_dataarray;
                 delete plr;
+                #if SHOWREBUILD
+                std::cout<<_size<<" split new segment number:"<<seg_size-1<<"\t";
+                #endif
                 return true;
             }else{
                 //2.6 link the bottom(segment_pt)
@@ -1820,12 +2318,16 @@ class skiplist {
                     split_segments[i]->delta_inserts.SignalWork();
                 }
                 delete plr;
+                // std::cout<<"raw size:"<<_size<<"key_space:"<<_start<<","<<_stop<<" split new segment number:"<<seg_size-1<<std::endl;
+                #if SHOWREBUILD
+                std::cout<<_size<<" split new segment number:"<<seg_size-1<<"\t";
+                #endif
                 return true;
             }
             return true;
         }
 
-        void ShowSegmentNumber(){
+        void ShowSegmentNumber(bool write_ = true){
             Segment_pt* head_seg = nullptr;
             SNode* pr_ = head_;
             for(int i = MaxLevel;i>0;i--){
@@ -1835,10 +2337,12 @@ class skiplist {
             int cnt = 0;
             SNode* cur = head_seg->Next();
             while(cur->Key != UNINT_MAX){
-                auto ESIZE = reinterpret_cast<Segment_pt*>(cur)->DataArray->size.load(std::memory_order_relaxed);
-                string kk = to_string(cur->Key)+"\t"+to_string(reinterpret_cast<Segment_pt*>(cur)->bound)+"\t"+to_string(ESIZE)+"\t"+
-                to_string(ESIZE*1.0/(reinterpret_cast<Segment_pt*>(cur)->DataArray->num_items))+"\n";
-                write_into_file("./segment.csv",kk.c_str());
+                if(write_){
+                    auto ESIZE = reinterpret_cast<Segment_pt*>(cur)->DataArray->size.load(std::memory_order_relaxed);
+                    string kk = to_string(cur->Key)+"\t"+to_string(reinterpret_cast<Segment_pt*>(cur)->bound)+"\t"+to_string(ESIZE)+"\t"+
+                    to_string(ESIZE*1.0/(reinterpret_cast<Segment_pt*>(cur)->DataArray->num_items))+"\n";
+                    write_into_file("./segment.csv",kk.c_str());
+                }
                 cnt++;
                 cur = cur->Next();
             }
