@@ -3,6 +3,8 @@
 #include <thread>
 
 #define PRFO 0
+#define PRFOINSERT 0
+#define PRFOQUERY 0
 
 #if PRFO
 #include<gperftools/profiler.h>
@@ -21,7 +23,7 @@ int key_dis = (4*MM)/THREAD_NUMBER;
 #else
 int key_dis = (NUMBERDATA)/THREAD_NUMBER;
 #endif
-unsigned int *dataq0 = new unsigned int[NUMBERDATA];
+unsigned int *input_data = new unsigned int[NUMBERDATA];
 skiplist<unsigned int,int> *list = new skiplist<unsigned int,int>(SkiplistMaxLevel,Gm);
 
 long long partial_r[THREAD_NUMBER];
@@ -30,29 +32,24 @@ long long scan_time_on_check[THREAD_NUMBER];
 int split_total[THREAD_NUMBER];
 long long collision_total[THREAD_NUMBER];
 long long insert_time_total[THREAD_NUMBER];
-
-unsigned int min_key;
+char search_time[] = "./search_time.csv";
+char insert_time[] = "./insert_time.csv";
 
 using namespace chrono;
 
 void GetData(){
     //ycsb64M
-    char unique_dadta_file[] = "/home/yhzhou/datasets/ycsb64M.csv";//unique_iot_web_unique_shuffle
-    // //unique_iot_web_unique
+    char unique_dadta_file[] = "/home/yhzhou/datasets/ycsb64M.csv";
     ifstream fp(unique_dadta_file);
     string line;
-    min_key = UNINT_MAX;
     for(int i =0;i<NUMBERDATA;i++){
         getline(fp,line);
-        dataq0[i] = atoi(line.c_str());  
+        input_data[i] = atoi(line.c_str());  
     }
     fp.close();
-    // for(int i = 0;i<NUMBERDATA;i++){
-    //     dataq0[i] = i+1;
-    // }
     // std::random_device rd;
     // std::mt19937 g(rd());
-    // std::shuffle(dataq0, dataq0+NUMBERDATA, g);
+    // std::shuffle(input_data, input_data+NUMBERDATA, g);
 }
 
 void test_insert(const int id,const int bound_l,const int bound_r ,int dijiduan){
@@ -62,13 +59,13 @@ void test_insert(const int id,const int bound_l,const int bound_r ,int dijiduan)
     long long scan_on_rebuild_topk = 0;
     long long collision_ = 0;
     for(int i = bound_l;i<bound_r;i++){
-        if(dataq0[i] == 0 || dataq0[i] == UNINT_MAX)
+        if(input_data[i] == 0 || input_data[i] == UNINT_MAX)
             continue;
-        // list->Add(dataq0[i],i,cnt);
+        // list->Add(input_data[i],i,cnt);
         int cnt = 0;
         long long scan = 0;
         long long collision_cnt = 0;
-        if(list->Add(dataq0[i],i,cnt,scan,SplitCnt,collision_cnt)){
+        if(list->Add(input_data[i],i,cnt,scan,SplitCnt,collision_cnt)){
             rebuild_cnt++;
         }
         scan_on_rebuild_topk+=scan;
@@ -84,10 +81,10 @@ void test_query(const int id,const int bound_l,const int bound_r ){
     std::pair<int,int> res;
     int nofind = 0;
     for(int i = bound_l;i<bound_r;i++){
-        if(dataq0[i] == 0 || dataq0[i] == UNINT_MAX)
+        if(input_data[i] == 0 || input_data[i] == UNINT_MAX)
             continue;
-        // list->Lookup(dataq0[i]);
-        res = list->Lookup(dataq0[i]);
+        // list->Lookup(input_data[i]);
+        res = list->Lookup(input_data[i]);
         if(!(res.first) || res.second != i){
             nofind++;
         }
@@ -98,7 +95,7 @@ void test_query(const int id,const int bound_l,const int bound_r ){
 
 void Insert_Part(int &kk,int id){
     std::vector<thread> threads;
-    #if PRFO
+    #if PRFOINSERT
     string name = "test"+std::to_string(id)+".prof";
     ProfilerStart(name.c_str());
     #endif
@@ -113,7 +110,7 @@ void Insert_Part(int &kk,int id){
     for(int idx=0; idx <THREAD_NUMBER; idx++){
         threads[idx].join();
     }
-    #if PRFO
+    #if PRFOINSERT
     ProfilerStop();
     #endif
     const auto end_time = std::chrono::steady_clock::now();
@@ -135,12 +132,18 @@ void Insert_Part(int &kk,int id){
         "\tcollision cnt:"+std::to_string(collision_cnt)+"\t";
     std::cout<<outs;
     list->ShowSegmentNumber(false);
+    string k = std::to_string(duration.count())+"\n";
+    write_into_file(insert_time,k.c_str());
 }
 
 void Query_Part(int &st){
     std::vector<thread> threads_2;
     const auto start_time = std::chrono::steady_clock::now();
     int query_key_dis = NUMBERDATA/THREAD_NUMBER;
+    #if PRFOQUERY
+    string name = "query.prof";
+    ProfilerStart(name.c_str());
+    #endif
     for(int idx=0; idx < THREAD_NUMBER; idx++){
         threads_2.push_back(thread(test_query, idx,st,st+query_key_dis));
         st+=query_key_dis;
@@ -148,9 +151,24 @@ void Query_Part(int &st){
     for(int idx=0; idx <THREAD_NUMBER; idx++){
         threads_2[idx].join();
     }
+    #if PRFOQUERY
+    ProfilerStop();
+    #endif
     const auto end_time = std::chrono::steady_clock::now();
     const auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
     std::cout << "query time: " << duration.count() << "us"<<std::endl;
+    string k = std::to_string(duration.count())+"\n";
+    write_into_file(search_time,k.c_str());
+}
+
+void RangeQuery_Test(){
+    vector<std::pair<unsigned int,int>> rg_res;
+    unsigned int st = 500,ed = 1480000;
+    list->Lookup(st,ed,rg_res);
+    for(auto it:rg_res){
+        std::cout<<it.first<<","<<it.second<<std::endl;
+    }
+    
 }
 
 int main(){
@@ -158,15 +176,16 @@ int main(){
     GetData();
     srand((int)time(0));
     std::cout<<"NUMBERDATA:"<<NUMBERDATA<<"\tTHREAD_NUMBER:"<<THREAD_NUMBER<<std::endl;
-    std::cout<<"SkiplistMaxLevel:"<<SkiplistMaxLevel<<"\tmax segment size:"<<list->segment_max_size<<"\tDETA_INSERT:"<<DETA_INSERT<<std::endl;
+    std::cout<<"SkiplistMaxLevel:"<<SkiplistMaxLevel<<"\tmax segment size:"<<list->segment_max_size<<"\tDELTA_INSERT:"<<DELTA_INSERT<<std::endl;
     const auto end_time = std::chrono::steady_clock::now();
     const auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
     std::cout << "prepare time: " << duration.count() << "us"<<std::endl;
-    int kk = 0;
+    
+    int n = 0;
     
     #if TEST_4
     for(int i = 0;i<16;i++){
-        Insert_Part(kk,i);
+        Insert_Part(n,i);
     }
     long long time_sum = 0;
     for(int i = 0;i<THREAD_NUMBER;i++){
@@ -174,10 +193,12 @@ int main(){
     }
     std::cout<<"sum of time:"<<time_sum<<std::endl;
     #else
-    Insert_Part(kk,0);
+    Insert_Part(n,0);
     #endif
     #if QUERY_TEST
-    kk = 0;
-    Query_Part(kk);
+    n = 0;
+    Query_Part(n);
     #endif   
+
+    std::cout<<"LearnedSkiplist space size:"<<list->SpaceSize() - NUMBERDATA * (sizeof(unsigned int)+ sizeof(int)) <<"\tByte"<<std::endl;
 }
