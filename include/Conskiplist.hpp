@@ -878,6 +878,9 @@ class skiplist {
                             
                             const double mid1_target = mid1_pos * static_cast<int>(BUILD_GAP_CNT + 1) + static_cast<int>(BUILD_GAP_CNT + 1) / 2;
                             const double mid2_target = mid2_pos * static_cast<int>(BUILD_GAP_CNT + 1) + static_cast<int>(BUILD_GAP_CNT + 1) / 2;
+                            if(abs(mid2_key - mid1_key) < 1e-8){
+                                std::cout<<"?";
+                            }
                             RT_ASSERT(abs(mid2_key - mid1_key)>1e-8);
                             n->slope = (mid2_target - mid1_target) / (mid2_key - mid1_key);
                             n->intercept = mid1_target - n->slope * mid1_key;
@@ -1059,10 +1062,13 @@ class skiplist {
             }
 
             //用于rebuild/split结束 和 新建节点完成Index layer连接后
-            void SignalForState(int h_,int esize=10,int id=0){
+            void SignalForState(int h_=0,int esize=10,int id=0){
                 std::unique_lock<std::mutex> lock(mutex_);
                 state = 0;
-                max_height = h_;
+                if(h_)
+                    max_height = h_;
+                // if(esize > 1e4)
+                //     depth_cap = MAX_DEPTH;
                 state_cv.notify_all();
             }
 
@@ -1074,14 +1080,24 @@ class skiplist {
             //false means skip,true means work_cnt++
             bool Wait(K key,Segment_pt *root,int id=0){
                 std::unique_lock<std::mutex> lockw(wait_mutex);
-                if(wait_cnt > 0){
+                while(wait_cnt > 0){
                     wait_cv.wait(lockw);
+                    if(wait_cnt == 0)
+                        break;
                 }
+                // if(wait_cnt > 0){
+                //     wait_cv.wait(lockw);
+                // }
                 lockw.unlock();
                 std::unique_lock<std::mutex> lock(mutex_);
-                if(state == 1){//node is busy
+                while(state){
                     state_cv.wait(lock);
+                    if(state == 0)
+                        break;
                 }
+                // if(state == 1){//node is busy
+                //     state_cv.wait(lock);
+                // }
                 if(root->bound > key){
                     work_cnt++;
                     return true;
@@ -1292,12 +1308,7 @@ class skiplist {
                     std::pair<int,V> res = locate->Lookup(key);
                     bool rebuild = locate->delta_inserts.Signal(1);
                     if(rebuild){
-                        locate->delta_inserts.SignalForState(INIT_DEPTH);
-                        // long long t;
-                        // int t2;
-                        // RebuildSegment(preds,locate,t,t2);
-                        // locate->delta_inserts.SignalForState(1);
-                        // return res;
+                        locate->delta_inserts.SignalForState();
                     }
                     return res;
                 }
@@ -1323,11 +1334,11 @@ class skiplist {
                     bool rebuild = locate->delta_inserts.Signal(1);
                     if(key2 <= locate->bound){
                         if(rebuild)
-                            locate->delta_inserts.SignalForState(MAX_DEPTH);
+                            locate->delta_inserts.SignalForState();
                         return;
                     }
                     if(rebuild)
-                        locate->delta_inserts.SignalForState(INIT_DEPTH);
+                        locate->delta_inserts.SignalForState();
                 }
                 locate = reinterpret_cast<Segment_pt*>(locate->Next());
             }
@@ -1350,8 +1361,8 @@ class skiplist {
                         bool rebuild = locate->delta_inserts.Signal(path_depth);
                         if(rebuild){
                             //rebuild or split
-                            RebuildSegment(preds,locate,scan_time,split_cnt);
-                            locate->delta_inserts.SignalForState(INIT_DEPTH);
+                            int esize = RebuildSegment(preds,locate,scan_time,split_cnt);
+                            locate->delta_inserts.SignalForState(INIT_DEPTH,esize);
                             return true;
                         }
                         return false;
@@ -1364,8 +1375,8 @@ class skiplist {
             return false;	
         }
 
-        //add a key-value into segment_pt
-        bool RebuildSegment(SNode** preds,Segment_pt* locate,long long &scan_time,int &split_cnt){
+        //rebuild or split segment
+        int RebuildSegment(SNode** preds,Segment_pt* locate,long long &scan_time,int &split_cnt){
             subtree *n = locate->DataArray;
             const int ESIZE = n->size.load(std::memory_order_acquire);
             int new_segment_max_size = locate->SegmentMaxSize;
@@ -1378,7 +1389,7 @@ class skiplist {
                 locate->DataArray = nullptr;
                 SplitSegment(locate,preds,keys,values,ESIZE,n_start,n_stop);//SplitSegment already released the write lock of locate
                 // int new_slot = locate->DataArray->num_items;
-                // int new_size = locate->DataArray->size.load(std::memory_order_acquire);
+                int new_size = locate->DataArray->size.load(std::memory_order_acquire);
                 new_segment_max_size = locate->SegmentMaxSize;
                 delete[] keys;
                 delete[] values;
@@ -1386,9 +1397,9 @@ class skiplist {
                 const auto end_time = std::chrono::steady_clock::now();
                 const auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
                 scan_time+=duration.count();
-                return false;
+                return new_size;
             }else{
-                // std::cout<<n->start<<"---"<<n->stop<<"\tEISZE:"<<ESIZE<<" rebuild"<<std::endl;
+                std::cout<<n->start<<"---"<<n->stop<<"\tEISZE:"<<ESIZE<<" rebuild"<<std::endl;
                 K* keys = new K[ESIZE];
                 V* values = new V[ESIZE];
                 unsigned int n_start = n->start,n_stop = n->stop;
@@ -1406,7 +1417,7 @@ class skiplist {
                 // std::cout<<"rebuild:\t"<<ESIZE<<"\tkey_space:"<<n_start<<"---"<<n_stop<<std::endl;
                 new_segment_max_size = locate->SegmentMaxSize;
                 scan_time+=duration.count();
-                return true;
+                return ESIZE;
             }
         }
 
@@ -1589,7 +1600,7 @@ class skiplist {
                 }
                 //2.11 release the split locks of segment group 
                 for(int i = 1;i<seg_size;i++){
-                    split_segments[i]->delta_inserts.SignalForState(INIT_DEPTH);
+                    split_segments[i]->delta_inserts.SignalForState(MAX_DEPTH);
                 }
                 delete plr;
                 return true;
