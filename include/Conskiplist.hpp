@@ -38,14 +38,14 @@ typedef uint8_t bitmap_t;
 #define USEPLR 0//now means not use plr's model to rebuild segment 
 #define Gm 64
 #define MAX_DEPTH 6
-#define INIT_DEPTH 4
+#define INIT_DEPTH 6//3
 #define INSERT_ROUTE 0
 #define SEGMENT_MAX_SIZE 2e5
 #define WRITESEG 0
 #define DELTA_INSERT 2e5
 #define IsREAD_THREAD 1
 #define StateType int
-
+#define DEBUG_ASSERT 0
 #define PLR_DATA_PREPROCESS 0 //control whether data of plr is preprocessed
 
 // runtime assert
@@ -354,10 +354,7 @@ int ComputeNextCount(const int seg_max_size,int esize,int slot_){
 
 int ComputeSegmentMaxSize(int slot_,int esize,unsigned int key_space){
     int res = 0; 
-    if(key_space > 0x7ffffff && esize < 5e4)
-        res = 1e5;
-    else
-        res = min((unsigned int)(2e5),key_space);
+    res = min((unsigned int)(2e5),key_space);
     return res;
 }
 
@@ -636,12 +633,15 @@ class skiplist {
                 const double mid2_target = n->num_items * 2 / 3;
 
                 n->slope = (mid2_target - mid1_target) / (mid2_key - mid1_key);
+                #if DEBUG_ASSERT
                 RT_ASSERT(isinf(n->slope)==0);
+                #endif
                 n->intercept = mid1_target - n->slope * mid1_key;
+                #if DEBUG_ASSERT
                 RT_ASSERT(isfinite(n->slope));
                 RT_ASSERT(isfinite(n->intercept));
                 RT_ASSERT(n!=NULL);
-
+                #endif
                 return n;
             }
 
@@ -685,27 +685,35 @@ class skiplist {
                 const double mid2_target = n->num_items * 2 / 3;
 
                 n->slope = (mid2_target - mid1_target) / (mid2_key - mid1_key);
+                #if DEBUG_ASSERT
                 RT_ASSERT(isinf(n->slope)==0);
+                #endif
                 n->intercept = mid1_target - n->slope * mid1_key;
+                #if DEBUG_ASSERT
                 RT_ASSERT(isfinite(n->slope));
                 RT_ASSERT(isfinite(n->intercept));
-
+                #endif
                 { // insert key1&value1
                     int pos = n->predict(key1);
+                    #if DEBUG_ASSERT
                     RT_ASSERT(BITMAP_GET(n->none_bitmap, pos) == 1);
+                    #endif
                     BITMAP_CLEAR(n->none_bitmap, pos);
                     n->items[pos].comp.data.key = key1;
                     n->items[pos].comp.data.value = value1;
                 }
                 { // insert key2&value2
                     int pos = n->predict(key2);
+                    #if DEBUG_ASSERT
                     RT_ASSERT(BITMAP_GET(n->none_bitmap, pos) == 1);
+                    #endif
                     BITMAP_CLEAR(n->none_bitmap, pos);
                     n->items[pos].comp.data.key = key2;
                     n->items[pos].comp.data.value = value2;
                 }
+                #if DEBUG_ASSERT
                 RT_ASSERT(n!=NULL);
-
+                #endif
                 return n;
             }
 
@@ -839,7 +847,9 @@ class skiplist {
                     max_depth = max(max_depth,lvl);
                     subtree* n = s.front().n;
                     s.pop();
+                    #if DEBUG_ASSERT
                     RT_ASSERT(end - begin >= 2);
+                    #endif
                     if(end-begin == 2){
                         //start and stop are set up in advance
                         subtree* _ = build_tree_two(_keys[begin], _values[begin], _keys[begin+1], _values[begin+1],n->start,n->stop);
@@ -860,15 +870,19 @@ class skiplist {
                             n->num_items = size;
                             n->slope = top_slope;
                             n->intercept = top_intercept;
+                            #if DEBUG_ASSERT
                             RT_ASSERT(isfinite(n->slope));
                             RT_ASSERT(isfinite(n->intercept));
+                            #endif
                         }
                         else{
                             int mid1_pos = (size - 1) / 3;
                             int mid2_pos = (size - 1) * 2 / 3;
+                            #if DEBUG_ASSERT
                             RT_ASSERT(0 <= mid1_pos);
                             RT_ASSERT(mid1_pos < mid2_pos);
                             RT_ASSERT(mid2_pos < size - 1);
+                            #endif
                             const long double mid1_key =
                                     (static_cast<long double>(keys[mid1_pos]) + static_cast<long double>(keys[mid1_pos + 1]) ) / 2;
                             const long double mid2_key =
@@ -878,17 +892,19 @@ class skiplist {
                             
                             const double mid1_target = mid1_pos * static_cast<int>(BUILD_GAP_CNT + 1) + static_cast<int>(BUILD_GAP_CNT + 1) / 2;
                             const double mid2_target = mid2_pos * static_cast<int>(BUILD_GAP_CNT + 1) + static_cast<int>(BUILD_GAP_CNT + 1) / 2;
-                            if(abs(mid2_key - mid1_key) < 1e-8){
-                                std::cout<<"?";
-                            }
+                            #if DEBUG_ASSERT
                             RT_ASSERT(abs(mid2_key - mid1_key)>1e-8);
+                            #endif
                             n->slope = (mid2_target - mid1_target) / (mid2_key - mid1_key);
                             n->intercept = mid1_target - n->slope * mid1_key;
+                            #if DEBUG_ASSERT
                             RT_ASSERT(isfinite(n->slope));
                             RT_ASSERT(isfinite(n->intercept));
+                            #endif
                         }        
+                        #if DEBUG_ASSERT
                         RT_ASSERT(n->slope >= 0);
-
+                        #endif
                         n->items = new_items(n->num_items);
                         memset(n->items,0,n->num_items*sizeof(Item));
                         n->mlock = new mutex();
@@ -908,16 +924,22 @@ class skiplist {
                                     break;
                                 }
                             }
+                            #if DEBUG_ASSERT
                             RT_ASSERT(item_i < n->num_items);
+                            #endif
                             if (next == offset + 1) {
+                                #if DEBUG_ASSERT
                                 RT_ASSERT(BITMAP_GET(n->none_bitmap,item_i) == 1);
                                 RT_ASSERT(BITMAP_GET(n->child_bitmap,item_i) == 0);
+                                #endif
                                 BITMAP_CLEAR(n->none_bitmap, item_i);
                                 n->items[item_i].comp.data.key = keys[offset];
                                 n->items[item_i].comp.data.value = values[offset];
                             } else {
+                                #if DEBUG_ASSERT
                                 RT_ASSERT(BITMAP_GET(n->none_bitmap,item_i) == 1);
                                 RT_ASSERT(BITMAP_GET(n->child_bitmap,item_i) == 0);
+                                #endif
                                 BITMAP_CLEAR(n->none_bitmap, item_i);
                                 BITMAP_SET(n->child_bitmap, item_i);
                                 n->items[item_i].comp.child = new_subtree(1);
@@ -935,8 +957,10 @@ class skiplist {
                         }
                     }   
                 }
+                #if DEBUG_ASSERT
                 RT_ASSERT(ret->start == start);
                 RT_ASSERT(ret->stop == stop);
+                #endif
                 return {ret,max_depth};
             }
 
@@ -994,8 +1018,8 @@ class skiplist {
             std::atomic<bool> lock_pool;
             std::stack<subtree*> tree_pool;
             
-            Segment_pt(K base,K bnd,int lvl,int deta_insert_init = DELTA_INSERT):SNode(base,false),bound(bnd),level(lvl),
-            delta_inserts(Semaphore(INIT_DEPTH)),lock_pool(false){}
+            Segment_pt(K base,K bnd,int lvl,int deta_insert_init = INIT_DEPTH):SNode(base,false),bound(bnd),level(lvl),
+            delta_inserts(Semaphore(deta_insert_init)),lock_pool(false){}
         };
         struct Index: SNode{
             //get downward_
@@ -1031,21 +1055,25 @@ class skiplist {
         };      
         class Semaphore {
         public:
-            explicit Semaphore(int h_):wait_cnt(0),state(0),max_height(h_),work_cnt(0),depth_cap(INIT_DEPTH){
+            //wait_cnt(0),
+            explicit Semaphore(int h_):state(0),max_height(h_),work_cnt(0),depth_cap(INIT_DEPTH){
             }
             ~Semaphore(){}
             //true means thread need to rebuild
             bool Signal(int h_,int id=0){
-                std::unique_lock<std::mutex> lockw(wait_mutex);
-                wait_cnt++;
-                lockw.unlock();
+                // std::unique_lock<std::mutex> lockw(wait_mutex);
+                // wait_cnt++;
+                // lockw.unlock();
+
                 std::unique_lock<std::mutex> lock(mutex_);
-                lockw.lock();
-                wait_cnt--;
-                if(wait_cnt == 0){
-                    wait_cv.notify_all();
-                }
-                lockw.unlock();
+
+                // lockw.lock();
+                // wait_cnt--;
+                // if(wait_cnt == 0){
+                //     wait_cv.notify_all();
+                // }
+                // lockw.unlock();
+
                 if(h_ > max_height){
                     max_height = h_;
                 }
@@ -1067,8 +1095,8 @@ class skiplist {
                 state = 0;
                 if(h_)
                     max_height = h_;
-                // if(esize > 1e4)
-                //     depth_cap = MAX_DEPTH;
+                if(esize > 2e4)
+                    depth_cap = MAX_DEPTH;
                 state_cv.notify_all();
             }
 
@@ -1079,25 +1107,16 @@ class skiplist {
 
             //false means skip,true means work_cnt++
             bool Wait(K key,Segment_pt *root,int id=0){
-                std::unique_lock<std::mutex> lockw(wait_mutex);
-                while(wait_cnt > 0){
-                    wait_cv.wait(lockw);
-                    if(wait_cnt == 0)
-                        break;
-                }
-                // if(wait_cnt > 0){
+                // std::unique_lock<std::mutex> lockw(wait_mutex);
+                // while(wait_cnt > 0){
                 //     wait_cv.wait(lockw);
                 // }
-                lockw.unlock();
+                // lockw.unlock();
+
                 std::unique_lock<std::mutex> lock(mutex_);
                 while(state){
                     state_cv.wait(lock);
-                    if(state == 0)
-                        break;
                 }
-                // if(state == 1){//node is busy
-                //     state_cv.wait(lock);
-                // }
                 if(root->bound > key){
                     work_cnt++;
                     return true;
@@ -1107,9 +1126,9 @@ class skiplist {
             }
         
         private:
-            std::mutex wait_mutex;
-            std::condition_variable wait_cv;
-            int wait_cnt;//记录当前正在等待的after insert线程数
+            // std::mutex wait_mutex;
+            // std::condition_variable wait_cv;
+            // int wait_cnt;//记录当前正在等待的after insert线程数
 
             std::mutex mutex_;
             std::condition_variable state_cv;
@@ -1128,13 +1147,15 @@ class skiplist {
             int slots = (n->num_items);
             int ele_size = n->size.load(std::memory_order_relaxed);
             if(ele_size < 2){
-                newseg = new Segment_pt(base,bound,level,1);//if the number of ele in subtree is smaller than 2,
-                                                            //then set delta_insert = 2,else set delta_insert = DELTA_INSERT
+                newseg = new Segment_pt(base,bound,level);
             }
             else{
-                int seg_max_size = ComputeSegmentMaxSize(slots,ele_size,bound - base);
-                int count_set = ComputeNextCount(seg_max_size,ele_size,slots);
-                newseg = new Segment_pt(base,bound,level,count_set);
+                // int seg_max_size = ComputeSegmentMaxSize(slots,ele_size,bound - base);
+                // int count_set = ComputeNextCount(seg_max_size,ele_size,slots);
+                if(ele_size <= 2e4)
+                    newseg = new Segment_pt(base,bound,level,INIT_DEPTH);
+                else
+                    newseg = new Segment_pt(base,bound,level,MAX_DEPTH);
             }
             reinterpret_cast<Segment_pt*>(newseg)->DataArray = n;
             reinterpret_cast<Segment_pt*>(newseg)->CreateMemPool();
@@ -1145,7 +1166,7 @@ class skiplist {
         
         SNode* NewSegment_pt(K base,K bound,int level,bool ht){
             //ht:is head node or tail node
-            SNode *newseg = new Segment_pt(base,bound,level,2);
+            SNode *newseg = new Segment_pt(base,bound,level,INIT_DEPTH);
             reinterpret_cast<Segment_pt*>(newseg)->CreateMemPool();
             //data array = build_tree_none
             if(ht)
@@ -1235,7 +1256,9 @@ class skiplist {
                 if(curr == nullptr){
                     curr = nullptr;
                 }
+                #if DEBUG_ASSERT
                 RT_ASSERT(curr!=nullptr);
+                #endif
                 succ = reinterpret_cast<Index*>(curr)->Next();   
                 while(succ && succ->Key <= key){
                     pred = curr;
@@ -1270,9 +1293,13 @@ class skiplist {
             //get the preds from [top_level,0)
             for(int l = top_level;l>0;l--){
                 //not sure key > curr's key
+                #if DEBUG_ASSERT
                 RT_ASSERT(pred->isIndex);
+                #endif
                 curr = reinterpret_cast<Index*>(pred)->Next();
+                #if DEBUG_ASSERT
                 RT_ASSERT(curr!=nullptr);
+                #endif
                 succ = reinterpret_cast<Index*>(curr)->Next();
                 while(succ && succ->Key <= key){//pred proceeds on, only when the left bound of succ is not greater than key
                     pred = curr;
@@ -1381,7 +1408,11 @@ class skiplist {
             const int ESIZE = n->size.load(std::memory_order_acquire);
             int new_segment_max_size = locate->SegmentMaxSize;
             const auto start_time = std::chrono::steady_clock::now();
-            if(ESIZE >= new_segment_max_size ){//split
+            unsigned key_space = n->stop - n->start;
+            //new_segment_max_size
+            if((ESIZE >= 2e4 && key_space >0xfffffff0) || ESIZE > 5e4 ){//split
+                // const auto time_stamp = std::chrono::steady_clock::now();
+                // std::cout<<ESIZE<<" split start time stamp:"<<time_stamp.time_since_epoch().count()<<std::endl;
                 K* keys = new K[ESIZE];
                 V* values = new V[ESIZE];
                 unsigned int n_start = n->start,n_stop = n->stop;
@@ -1394,12 +1425,15 @@ class skiplist {
                 delete[] keys;
                 delete[] values;
                 split_cnt++;
+                // std::cout<<ESIZE<<"\tsplit"<<std::endl;
                 const auto end_time = std::chrono::steady_clock::now();
+                // std::cout<<"split end time stamp:"<<end_time.time_since_epoch().count()<<std::endl;
                 const auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
                 scan_time+=duration.count();
                 return new_size;
             }else{
-                std::cout<<n->start<<"---"<<n->stop<<"\tEISZE:"<<ESIZE<<" rebuild"<<std::endl;
+                // string outs = to_string(n->start)+"---"+to_string(n->stop)+"\tsize:"+to_string(ESIZE)+"\n";
+                // std::cout<<outs;
                 K* keys = new K[ESIZE];
                 V* values = new V[ESIZE];
                 unsigned int n_start = n->start,n_stop = n->stop;
@@ -1496,8 +1530,9 @@ class skiplist {
                     ed = segment_stIndex[i+1];
                     bound = _keys[ed];
                 }
-        
+                #if DEBUG_ASSERT
                 RT_ASSERT(ed-st>0);
+                #endif
                 //2.3 rebuild subtree
                 subtree* new_subtree = nullptr;
                 if(ed-st == 1){
@@ -1555,6 +1590,7 @@ class skiplist {
                   
             }
 
+            // std::cout<<"split number:"<<seg_size<<std::endl;
             if(seg_size == 1){
                 root->DataArray = root_dataarray;
                 delete plr;
