@@ -451,6 +451,7 @@ class skiplist {
             }
 
             void find_key_in_subtree(K key1,K key2,std::vector<std::pair<K,V>> &result){
+                //目前的做法是扫描某一层时逐渐将其下一层锁住，扫描本层结束释放本层的锁
                 struct seg{
                     int pos_start,pos_end;
                     subtree *array; 
@@ -1345,19 +1346,25 @@ class skiplist {
             for(int i =0;i<=MaxLevel;i++){
                 preds[i] = nullptr;
             }
-            Segment_pt* locate = reinterpret_cast<Segment_pt*>(Scan(key1,preds));
+            Segment_pt *locate = reinterpret_cast<Segment_pt*>(Scan(key1,preds));
             while(true){
                 bool  noskip = locate->delta_inserts.Wait(key1,locate);//范围查询不参与rebuild
                 if(noskip){
                     locate->Lookup(key1,key2,result);
-                    bool rebuild = locate->delta_inserts.Signal(1);
-                    if(key2 <= locate->bound){
+                    if(key2 < locate->bound){
+                        //read compelete
+                        bool rebuild = locate->delta_inserts.Signal(1);
                         if(rebuild)
                             locate->delta_inserts.SignalForState();
                         return;
+                    }else{//traverse the next node
+                        Segment_pt *next_seg = reinterpret_cast<Segment_pt*>(locate->Next());//void repeatedly reading
+                        bool rebuild = locate->delta_inserts.Signal(1);
+                        if(rebuild)
+                            locate->delta_inserts.SignalForState();
+                        locate = next_seg;
+                        continue;
                     }
-                    if(rebuild)
-                        locate->delta_inserts.SignalForState();
                 }
                 locate = reinterpret_cast<Segment_pt*>(locate->Next());
             }
