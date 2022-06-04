@@ -24,6 +24,11 @@
 #define PREFETCH(addr, rw, locality) __builtin_prefetch
 typedef uint8_t bitmap_t;
 
+typedef unsigned long long KeyType;
+typedef int VaueType;
+typedef long double ModelType; 
+#define KeyMax (ULLONG_MAX)
+
 #define BITMAP_WIDTH (sizeof(bitmap_t) * 8)
 #define BITMAP_SIZE(num_items) (((num_items) + BITMAP_WIDTH - 1) / BITMAP_WIDTH)
 #define BITMAP_GET(bitmap, pos) (((bitmap)[(pos) / BITMAP_WIDTH] >> ((pos) % BITMAP_WIDTH)) & 1)
@@ -127,240 +132,218 @@ enum GreedyState {
 	Need2 = 0, Need1, Ready
 };
 
-class Point {
-public:
-	double x;
-	double y;
-
-	Point();
-
-	Point(double x0, double y0) {
-		x = x0;
-		y = y0;
-	}
-
-	Point* upper_bound(double gamma) {
-		Point* res = new Point(this->x, this->y + gamma);
-		return res;
-	}
-
-	Point* lower_bound(double gamma) {
-		Point* res = new Point(this->x, this->y - gamma);
-		return res;
-	}
-};
-
-class Line {
-public:
-	double slope;
-	double intercept;
-
-	Line();
-
-	Line(Point* a, Point* b) {
-		this->slope = (b->y - a->y) / (b->x - a->x);
-		this->intercept = b->y - b->x * this->slope;
-	}
-
-	Point* Intersection(Line* b) {
-		double x,y;
-		double deta = this->slope - b->slope;
-		x = (b->intercept - this->intercept)/deta;
-		y = (this->slope * b->intercept - this->intercept*b->slope)/deta;
-		Point* res = new Point(x, y);
-		return res;
-	}
-
-	bool AboveAssert(Point* k) {
-		return k->y > k->x * this->slope + this->intercept;
-	}
-
-	bool BeblowAssert(Point* k) {
-		return k->y < k->x * this->slope + this->intercept;
-	}
-
-};
-
-class Segment {
-	public:
-		unsigned int start;
-		unsigned int stop;
-		double slope;
-		double intercept;
-		Segment();
-		Segment(unsigned int start, unsigned int stop, double slope, double intercept) {
-			this->start = start;
-			this->stop = stop;
-			this->slope = slope;
-			this->intercept = intercept;
-		}
-};
-
-class GreedyPLR {
-public:
-	GreedyState state = GreedyState::Need2;
-	int gamma;
-	Point* s0 = nullptr;
-	Point* s1 = nullptr;
-	Point* sint = nullptr;//point of intersection
-	Point* s_last = nullptr;
-	Line* rho_lower = nullptr;
-	Line* rho_upper = nullptr;
-
-	GreedyPLR();
-
-	GreedyPLR(int ga) { this->gamma = ga; }
-
-	void setup(Point* s0, Point* s1)
-	{
-		this->s0 = s0;
-		this->s1 = s1;
-
-		this->rho_lower = new Line(s0->upper_bound(this->gamma), s1->lower_bound(this->gamma));
-
-		this->rho_upper = new  Line(s0->lower_bound(this->gamma), s1->upper_bound(this->gamma));
-		this->sint = nullptr;
-		this->sint = this->rho_upper->Intersection(this->rho_lower);
-		if (this->sint == nullptr) {
-			cerr << "there is no intersection between upper line and lower line " << endl;
-		}
-	};
-
-	Segment* CurrentSegment(double end) {
-		if (this->state != GreedyState::Ready) {
-			return nullptr;
-		}
-		Segment* res = nullptr;
-		double s_start = this->s0->x;
-		double s_stop = end;
-		double s_slope;
-		s_slope = (this->rho_lower->slope + this->rho_upper->slope) / 2.0;
-		// if(s_slope < 0 && this->rho_lower->slope >= 0){
-		// 	s_slope = this->rho_lower->slope;
-		// }
-		// RT_ASSERT(s_slope>=0);
-		// cerr << "current slope:" << s_slope << endl;
-		double s_intercept = this->sint->y - this->sint->x * s_slope;
-		res = new Segment(s_start, s_stop, s_slope, s_intercept);
-		return res;
-	}
-
-	Segment* Process_pt(Point* k) {
-		if (this->state != GreedyState::Ready) {
-			return nullptr;
-		}
-		if (!(this->rho_lower->AboveAssert(k) && this->rho_upper->BeblowAssert(k))) {
-			//重新开一个段
-			Segment* current = this->CurrentSegment(this->s_last->x);//(k->x);
-			// delete this->s0;
-			k->y = 0;
-            k->x = 0;
-			// this->s0 = nullptr;
-			this->s0 = k;
-			// this->s_last = nullptr;
-			this->s_last = k;
-			this->state = GreedyState::Need1;
-
-			return current;
-		}
-		Point* s_u = k->upper_bound(this->gamma);
-		Point* s_l = k->lower_bound(this->gamma);
-		if (this->rho_upper->BeblowAssert(s_u)) {
-			delete this->rho_upper;
-			// this->rho_upper = nullptr;
-			this->rho_upper = new Line(this->sint, s_u);
-		}
-
-		if (this->rho_lower->AboveAssert(s_l)) {
-			delete this->rho_lower;
-			// this->rho_lower = nullptr;
-			this->rho_lower = new Line(this->sint, s_l);
-		}
-		return nullptr;
-
-	}
-
-	Segment* Process(double x, double y) {
-		//delete this->s_last;
-		Segment* res = nullptr;
-		Point* newp = new Point(x, y);
-		// GreedyState newState = this->state;
-		if (this->state == GreedyState::Need2) {
-			this->s0 = nullptr;
-			this->s_last = nullptr;
-			newp->y = 0;
-			this->s_last = newp;
-			this->s0 = newp;
-			// newState = GreedyState::Need1;
-			this->state = GreedyState::Need1;
-		}
-		else if (this->state == GreedyState::Need1) {
-			//delete this->s1;
-			this->s1 = nullptr;
-			this->s_last = nullptr;
-			this->s_last = newp;
-			this->s1 = newp;
-			this->setup(this->s0, this->s1);
-			// newState = GreedyState::Ready;
-			this->state = GreedyState::Ready;
-		}
-		else if (this->state == GreedyState::Ready) {
-			res = this->Process_pt(newp);
-			if (res != nullptr) {
-				// newState = GreedyState::Need1;
-				this->state = GreedyState::Need1;
-			}
-			else {
-				// newState = GreedyState::Ready;
-				this->state = GreedyState::Ready;
-			}
-		}
-		// this->state = newState;
-		return res;
-	}
-
-	Segment* finish() {
-		if (this->state == GreedyState::Need2) {
-			return nullptr;
-		}
-		else if (this->state == GreedyState::Need1) {
-			Segment* curnt = new Segment(this->s0->x, UNINT_MAX, 0.0, this->s0->y);
-			// cerr <<"finish slopt:"<< curnt->slope << " "<<endl;
-			return curnt;
-		}
-		else if (this->state == GreedyState::Ready) {
-			return this->CurrentSegment(UNINT_MAX);
-		}
-		return nullptr;
-	}
-};
-
 enum ItemState {
     Empty = 0, Element, Subtree
 };
 
-int ComputeNextCount(const int seg_max_size,int esize,int slot_){
-    int remain_size = max(1,seg_max_size - esize);
-    int count = 0;
-    if(slot_ < 4096){
-        count  = int(slot_*2);
-    }
-    else{
-        count = min(int(slot_*4),remain_size);
-    }
-    count = min(int(DELTA_INSERT),count);
-    return count;
-}
-
-int ComputeSegmentMaxSize(int slot_,int esize,unsigned int key_space){
-    int res = 0; 
-    res = min((unsigned int)(2e5),key_space);
-    return res;
-}
-
-template<class K, class V>
+//M 指示plr 中元素类型
+template<class K, class V,class M>
 class skiplist {
     public:
+        class Point {
+        public:
+            M x;
+            M y;
+
+            Point();
+
+            Point(M x0, M y0) {
+                x = x0;
+                y = y0;
+            }
+
+            Point* upper_bound(M gamma) {
+                Point* res = new Point(this->x, this->y + gamma);
+                return res;
+            }
+
+            Point* lower_bound(M gamma) {
+                Point* res = new Point(this->x, this->y - gamma);
+                return res;
+            }
+        };
+
+        class Line {
+        public:
+            M slope;
+            M intercept;
+
+            Line();
+
+            Line(Point* a, Point* b) {
+                this->slope = (b->y - a->y) / (b->x - a->x);
+                this->intercept = b->y - b->x * this->slope;
+            }
+
+            Point* Intersection(Line* b) {
+                M x,y;
+                M deta = this->slope - b->slope;
+                x = (b->intercept - this->intercept)/deta;
+                y = (this->slope * b->intercept - this->intercept*b->slope)/deta;
+                Point* res = new Point(x, y);
+                return res;
+            }
+
+            bool AboveAssert(Point* k) {
+                return k->y > k->x * this->slope + this->intercept;
+            }
+
+            bool BeblowAssert(Point* k) {
+                return k->y < k->x * this->slope + this->intercept;
+            }
+
+        };
+
+        class Segment {
+            public:
+                K start;
+                K stop;
+                M slope;
+                M intercept;
+                Segment();
+                Segment(K start, K stop, M slope, M intercept) {
+                    this->start = start;
+                    this->stop = stop;
+                    this->slope = slope;
+                    this->intercept = intercept;
+                }
+        };
+
+        class GreedyPLR {
+        public:
+            GreedyState state = GreedyState::Need2;
+            int gamma;
+            Point* s0 = nullptr;
+            Point* s1 = nullptr;
+            Point* sint = nullptr;//point of intersection
+            Point* s_last = nullptr;
+            Line* rho_lower = nullptr;
+            Line* rho_upper = nullptr;
+
+            GreedyPLR();
+
+            GreedyPLR(int ga):gamma(ga){}
+
+            void setup(Point* s0, Point* s1)
+            {
+                this->s0 = s0;
+                this->s1 = s1;
+
+                this->rho_lower = new Line(s0->upper_bound(this->gamma), s1->lower_bound(this->gamma));
+
+                this->rho_upper = new  Line(s0->lower_bound(this->gamma), s1->upper_bound(this->gamma));
+                this->sint = nullptr;
+                this->sint = this->rho_upper->Intersection(this->rho_lower);
+                if (this->sint == nullptr) {
+                    cerr << "there is no intersection between upper line and lower line " << endl;
+                    RT_ASSERT(this->sint != nullptr);
+                }
+            };
+
+            Segment* CurrentSegment(M end) {
+                if (this->state != GreedyState::Ready) {
+                    return nullptr;
+                }
+                Segment* res = nullptr;
+                M s_start = this->s0->x;
+                M s_stop = end;
+                M s_slope;
+                s_slope = (this->rho_lower->slope + this->rho_upper->slope) / 2.0;
+                M s_intercept = this->sint->y - this->sint->x * s_slope;
+                res = new Segment(s_start, s_stop, s_slope, s_intercept);
+                return res;
+            }
+
+            Segment* Process_pt(Point* k) {
+                if (this->state != GreedyState::Ready) {
+                    return nullptr;
+                }
+                if (!(this->rho_lower->AboveAssert(k) && this->rho_upper->BeblowAssert(k))) {
+                    //重新开一个段
+                    Segment* current = this->CurrentSegment(this->s_last->x);//(k->x);
+                    // delete this->s0;
+                    k->y = 0;
+                    k->x = 0;
+                    // this->s0 = nullptr;
+                    this->s0 = k;
+                    // this->s_last = nullptr;
+                    this->s_last = k;
+                    this->state = GreedyState::Need1;
+
+                    return current;
+                }
+                Point* s_u = k->upper_bound(this->gamma);
+                Point* s_l = k->lower_bound(this->gamma);
+                if (this->rho_upper->BeblowAssert(s_u)) {
+                    delete this->rho_upper;
+                    // this->rho_upper = nullptr;
+                    this->rho_upper = new Line(this->sint, s_u);
+                }
+
+                if (this->rho_lower->AboveAssert(s_l)) {
+                    delete this->rho_lower;
+                    // this->rho_lower = nullptr;
+                    this->rho_lower = new Line(this->sint, s_l);
+                }
+                return nullptr;
+
+            }
+
+            Segment* Process(M x, M y) {
+                //delete this->s_last;
+                Segment* res = nullptr;
+                Point* newp = new Point(x, y);
+                // GreedyState newState = this->state;
+                if (this->state == GreedyState::Need2) {
+                    this->s0 = nullptr;
+                    this->s_last = nullptr;
+                    newp->y = 0;
+                    this->s_last = newp;
+                    this->s0 = newp;
+                    // newState = GreedyState::Need1;
+                    this->state = GreedyState::Need1;
+                }
+                else if (this->state == GreedyState::Need1) {
+                    //delete this->s1;
+                    this->s1 = nullptr;
+                    this->s_last = nullptr;
+                    this->s_last = newp;
+                    this->s1 = newp;
+                    this->setup(this->s0, this->s1);
+                    // newState = GreedyState::Ready;
+                    this->state = GreedyState::Ready;
+                }
+                else if (this->state == GreedyState::Ready) {
+                    res = this->Process_pt(newp);
+                    if (res != nullptr) {
+                        // newState = GreedyState::Need1;
+                        this->state = GreedyState::Need1;
+                    }
+                    else {
+                        // newState = GreedyState::Ready;
+                        this->state = GreedyState::Ready;
+                    }
+                }
+                // this->state = newState;
+                return res;
+            }
+
+            Segment* finish() {
+                if (this->state == GreedyState::Need2) {
+                    return nullptr;
+                }
+                else if (this->state == GreedyState::Need1) {
+                    Segment* curnt = new Segment(this->s0->x, KeyMax, 0.0, this->s0->y);
+                    // cerr <<"finish slopt:"<< curnt->slope << " "<<endl;
+                    return curnt;
+                }
+                else if (this->state == GreedyState::Ready) {
+                    return this->CurrentSegment(KeyMax);
+                }
+                return nullptr;
+            }
+        };
+
         class Semaphore;
         struct node{
             K key;
@@ -400,7 +383,7 @@ class skiplist {
         struct subtree{
             //--------------------------subtree operation--------------------------//
             inline int predict(K key){
-                double v = this->slope * (static_cast<long double>(key)) + this->intercept;
+                M v = this->slope * (static_cast<long double>(key)) + this->intercept;
                 if(v > std::numeric_limits<int>::max() / 2) {
                     return this->num_items - 1;
                 }
@@ -411,9 +394,9 @@ class skiplist {
             }
 
             //compute the range of subtree
-            std::pair<unsigned int,unsigned int> computeRange(int pos){
-                unsigned int start_ = (pos - this->intercept)/(this->slope * 1000.0)*1000.0;
-                unsigned int stop_ = (pos + 1 - this->intercept)/(this->slope * 1000.0)*1000.0;
+            std::pair<K, K> computeRange(int pos){
+                K start_ = (static_cast<long double>(pos) - this->intercept)/(this->slope * 1000.0)*1000.0;
+                K stop_ = (static_cast<long double>(pos) + 1 - this->intercept)/(this->slope * 1000.0)*1000.0;
                 if(pos == 0)
                     start_ = this->start;
                 if(pos == this->num_items-1)
@@ -424,7 +407,8 @@ class skiplist {
             std::pair<bool,V> find_key_in_subtree(K key){
                 subtree* n = this;
                 int pos = n->predict(key);
-                n->LockItem(pos);
+                while(!n->mlock->try_lock()){;}
+                // n->LockItem(pos);
                 while(1){
                     if (BITMAP_GET(n->none_bitmap, pos) == 1) {
                         //checkTypeEqualNull
@@ -440,9 +424,10 @@ class skiplist {
                     }
                     else{
                         subtree* next_subtree = n->items[pos].comp.child;
-                        int pos_next = next_subtree->predict(key);
-                        next_subtree->LockItem(pos_next);
                         n->ReleaseItem(pos);
+                        int pos_next = next_subtree->predict(key);
+                        // next_subtree->LockItem(pos_next);
+                        while(!next_subtree->mlock->try_lock()){;}
                         n = next_subtree;
                         pos = pos_next;
                     }
@@ -450,6 +435,30 @@ class skiplist {
                 return {false,0};
             }
 
+            std::pair<bool,V> GetKeyValueNoMutex(K key){
+                subtree* n = this;
+                int pos = n->predict(key);
+                while(1){
+                    if (BITMAP_GET(n->none_bitmap, pos) == 1) {
+                        break;
+                    }
+                    else if(BITMAP_GET(n->child_bitmap, pos) == 0){
+                        //checkTypeEqualData
+                        bool res_1 = n->items[pos].comp.data.key == key;
+                        V res_2 = n->items[pos].comp.data.value;
+                        return {res_1,res_2};
+                    }
+                    else{
+                        subtree* next_subtree = n->items[pos].comp.child;
+                        int pos_next = next_subtree->predict(key);
+                        n = next_subtree;
+                        pos = pos_next;
+                    }
+                }
+                return {false,0};
+            }
+
+            //TODO:层锁获取后面再看一下
             void find_key_in_subtree(K key1,K key2,std::vector<std::pair<K,V>> &result){
                 //目前的做法是扫描某一层时逐渐将其下一层锁住，扫描本层结束释放本层的锁
                 struct seg{
@@ -516,8 +525,8 @@ class skiplist {
             int is_two = 0; // is special node for only two keys
             std::atomic<int> size;
             int num_items = 0; // size of items
-            double slope = 0,intercept = 0;
-            K start = UNINT_MAX,stop=UNINT_MAX;
+            M slope = 0,intercept = 0;
+            K start = KeyMax,stop=KeyMax;
             Item* items = nullptr;
             std::mutex *mlock = nullptr;
             bitmap_t* none_bitmap = nullptr; // 1 means None, 0 means Data or Child
@@ -634,8 +643,8 @@ class skiplist {
                 const long double mid1_key = (static_cast<long double>(stop) - static_cast<long double>(start))/3.0;
                 const long double mid2_key = mid1_key*2;
 
-                const double mid1_target = n->num_items / 3;
-                const double mid2_target = n->num_items * 2 / 3;
+                const long double mid1_target = n->num_items / 3;
+                const long double mid2_target = n->num_items * 2 / 3;
 
                 n->slope = (mid2_target - mid1_target) / (mid2_key - mid1_key);
                 #if DEBUG_ASSERT
@@ -650,7 +659,7 @@ class skiplist {
                 return n;
             }
 
-            subtree* build_tree_two(K key1, int value1, K key2, int value2,K start=0,K stop=0,subtree* x = nullptr){
+            subtree* build_tree_two(K key1, V value1, K key2, V value2,K start=0,K stop=0,subtree* x = nullptr){
                 if (key1 > key2) {
                     std::swap(key1, key2);
                     std::swap(value1, value2);
@@ -686,8 +695,8 @@ class skiplist {
                 const long double mid1_key = static_cast<long double>(key1);
                 const long double mid2_key = static_cast<long double>(key2);
 
-                const double mid1_target = n->num_items / 3;
-                const double mid2_target = n->num_items * 2 / 3;
+                const long double mid1_target = n->num_items / 3;
+                const long double mid2_target = n->num_items * 2 / 3;
 
                 n->slope = (mid2_target - mid1_target) / (mid2_key - mid1_key);
                 #if DEBUG_ASSERT
@@ -746,6 +755,8 @@ class skiplist {
                 n->mlock->lock();
                 element_cnt = n->size.load(std::memory_order_acquire) + 1;
                 state_raw = BITMAP_GET(n->none_bitmap, pos) == 1?0:BITMAP_GET(n->child_bitmap, pos)+1;
+                // bool duplicate = false;
+                std::vector<subtree*> route;
                 while(1){
                     path_size++;
                     if(state_raw == ItemState::Empty){
@@ -756,9 +767,17 @@ class skiplist {
                         n->mlock->unlock();
                         break;
                     }else if(state_raw == ItemState::Element){
+                        if(n->items[pos].comp.data.key == key){
+                            n->items[pos].comp.data.value = value;
+                            n->mlock->unlock();
+                            for(int i = 0;i<path_size-1;i++){
+                                route[i]->size.fetch_sub(1,std::memory_order_acquire);
+                            }
+                            break;
+                        }
                         subtree* next_subtree = nullptr;
                         //compute
-                        std::pair<unsigned int,unsigned int>line = n->computeRange(pos);
+                        std::pair<K, K>line = n->computeRange(pos);
                         next_subtree = build_tree_two(key, value,n->items[pos].comp.data.key, 
                         n->items[pos].comp.data.value,min(line.first,min(key,n->items[pos].comp.data.key)),
                         line.second);   
@@ -770,19 +789,20 @@ class skiplist {
                         n->mlock->unlock();
                         collision++;
                         break;
-                        
                     }else{//ItemState::Subtree
                         n->size.fetch_add(1, std::memory_order_acquire);
+                        route.push_back(n);
                         subtree* next_n = n->items[pos].comp.child;//n->items[pos].comp.child;
+                        n->mlock->unlock();
                         int next_pos = next_n->predict(key);
                         next_n->mlock->lock();
                         state_raw = BITMAP_GET(next_n->none_bitmap, next_pos) == 1?0:BITMAP_GET(next_n->child_bitmap, next_pos)+1;
-                        n->mlock->unlock();
                         n = next_n;
                         pos = next_pos;
                         collision++;
                     }
                 }
+
             }
             
             void scan_and_destroy_subtree(subtree* root,K *keys,V *values,int ESIZE, bool destory = true){
@@ -833,7 +853,7 @@ class skiplist {
                 }
             }
 
-            std::pair<subtree*,int> rebuild_tree(K *_keys,int* _values,int _size,K start,K stop,bool plr = false,double top_slope = 0,double top_intercept = 0){
+            std::pair<subtree*,int> rebuild_tree(K *_keys,V * _values,int _size,K start,K stop,bool plr = false,M top_slope = 0,M top_intercept = 0){
                 //plr means whether to use the model from plr
                 //top_slope , top_intercept are the model from the plr
                 RT_ASSERT(_size > 1);
@@ -869,8 +889,8 @@ class skiplist {
                         }
                     }
                     else{
-                        unsigned int* keys = _keys + begin;
-                        int* values = _values + begin;
+                        K * keys = _keys + begin;
+                        V * values = _values + begin;
                         const int size = end - begin;
                         const int BUILD_GAP_CNT = compute_gap_count(size);
                         n->is_two = 0;
@@ -899,8 +919,8 @@ class skiplist {
 
                             n->num_items = size * static_cast<int>(BUILD_GAP_CNT + 1);
                             
-                            const double mid1_target = mid1_pos * static_cast<int>(BUILD_GAP_CNT + 1) + static_cast<int>(BUILD_GAP_CNT + 1) / 2;
-                            const double mid2_target = mid2_pos * static_cast<int>(BUILD_GAP_CNT + 1) + static_cast<int>(BUILD_GAP_CNT + 1) / 2;
+                            const long double mid1_target = mid1_pos * static_cast<int>(BUILD_GAP_CNT + 1) + static_cast<int>(BUILD_GAP_CNT + 1) / 2;
+                            const long double mid2_target = mid2_pos * static_cast<int>(BUILD_GAP_CNT + 1) + static_cast<int>(BUILD_GAP_CNT + 1) / 2;
                             #if DEBUG_ASSERT
                             RT_ASSERT(abs(mid2_key - mid1_key)>1e-8);
                             #endif
@@ -952,7 +972,7 @@ class skiplist {
                                 BITMAP_CLEAR(n->none_bitmap, item_i);
                                 BITMAP_SET(n->child_bitmap, item_i);
                                 n->items[item_i].comp.child = new_subtree(1);
-                                std::pair<unsigned int,unsigned int> line = n->computeRange(item_i);
+                                std::pair<K, K> line = n->computeRange(item_i);
                                 n->items[item_i].comp.child->start = min(line.first,keys[offset]);
                                 n->items[item_i].comp.child->stop = line.second;
                                 s.push({begin + offset, begin + next, lvl + 1, n->items[item_i].comp.child});
@@ -1007,8 +1027,9 @@ class skiplist {
             }
             
             //reset segment max size when build model or split
-            void SetSegMax(int slot_,int esize,unsigned int key_space){
-                SegmentMaxSize = ComputeSegmentMaxSize(slot_,esize,key_space);
+            void SetSegMax(int slot_,int esize,K key_space){
+                SegmentMaxSize = min((K)(2e5),key_space);
+                // SegmentMaxSize = ComputeSegmentMaxSize(slot_,esize,key_space);
             }
 
             long long SpaceSize(){
@@ -1143,8 +1164,6 @@ class skiplist {
                 newseg = new Segment_pt(base,bound,level);
             }
             else{
-                // int seg_max_size = ComputeSegmentMaxSize(slots,ele_size,bound - base);
-                // int count_set = ComputeNextCount(seg_max_size,ele_size,slots);
                 if(ele_size <= 5e4)//TODO initdepth
                     newseg = new Segment_pt(base,bound,level,INIT_DEPTH);
                 else
@@ -1246,9 +1265,6 @@ class skiplist {
             for(int l = top_level;l>0;l--){
                 //not sure key > curr's key
                 curr = reinterpret_cast<Index*>(pred)->Next();
-                if(curr == nullptr){
-                    curr = nullptr;
-                }
                 #if DEBUG_ASSERT
                 RT_ASSERT(curr!=nullptr);
                 #endif
@@ -1261,6 +1277,12 @@ class skiplist {
                 if(key >= curr->Key){
                     //key is bwtween curr and succ
                     pred = curr;
+                    if(key < reinterpret_cast<Segment_pt*>(pred)->bound ){
+                        for(;l>0;l--){
+                            pred = reinterpret_cast<Index*>(pred)->Down();
+                        }
+                        break;
+                    }
                 }
                 pred = reinterpret_cast<Index*>(pred)->Down();
             }
@@ -1315,8 +1337,27 @@ class skiplist {
             return locate;
         }
 
+        std::pair<bool,V> query(K key){
+            Segment_pt* locate = reinterpret_cast<Segment_pt*>(Scan(key));
+            // return locate->Lookup(key);
+            // return locate->DataArray->GetKeyValueNoMutex(key);
+            while(true){
+                bool  noskip = locate->delta_inserts.Wait(key,locate);
+                if(noskip){
+                    std::pair<bool,V> res = locate->DataArray->GetKeyValueNoMutex(key);
+                    bool rebuild = locate->delta_inserts.Signal(1);
+                    if(rebuild){
+                        locate->delta_inserts.SignalForState(1);
+                    }
+                    return res;
+                }
+                locate = reinterpret_cast<Segment_pt*>(locate->Next());
+            }
+            return {false,0};
+        }
+
         //skiplist lookup a key
-        std::pair<int,V> Lookup(K key){
+        std::pair<bool,V> Lookup(K key){
             SNode* preds[MaxLevel+1];
             for(int i =0;i<=MaxLevel;i++){
                 preds[i] = nullptr;
@@ -1325,16 +1366,16 @@ class skiplist {
             while(true){
                 bool  noskip = locate->delta_inserts.Wait(key,locate);
                 if(noskip){
-                    std::pair<int,V> res = locate->Lookup(key);
+                    std::pair<bool,V> res = locate->Lookup(key);
                     bool rebuild = locate->delta_inserts.Signal(1);
                     if(rebuild){
-                        locate->delta_inserts.SignalForState();
+                        locate->delta_inserts.SignalForState(1);
                     }
                     return res;
                 }
                 locate = reinterpret_cast<Segment_pt*>(locate->Next());
             }
-            return {-1,0};
+            return {false,0};
         }
         
         //return the corresponding values whose keys satisfy [key1,key2)
@@ -1415,7 +1456,7 @@ class skiplist {
                 // std::cout<<ESIZE<<" split start time stamp:"<<time_stamp.time_since_epoch().count()<<std::endl;
                 K* keys = new K[ESIZE];
                 V* values = new V[ESIZE];
-                unsigned int n_start = n->start,n_stop = n->stop;
+                K n_start = n->start,n_stop = n->stop;
                 locate->scan_and_destroy_subtree(n,keys,values,ESIZE);
                 locate->DataArray = nullptr;
                 SplitSegment(locate,preds,keys,values,ESIZE,n_start,n_stop);//SplitSegment already released the write lock of locate
@@ -1434,9 +1475,9 @@ class skiplist {
             }else{
                 // string outs = to_string(n->start)+"---"+to_string(n->stop)+"\tsize:"+to_string(ESIZE)+"\n";
                 // std::cout<<outs;
-                K* keys = new K[ESIZE];
-                V* values = new V[ESIZE];
-                unsigned int n_start = n->start,n_stop = n->stop;
+                K *keys = new K[ESIZE];
+                V *values = new V[ESIZE];
+                K n_start = n->start,n_stop = n->stop;
                 locate->scan_and_destroy_subtree(n,keys,values,ESIZE);
                 locate->DataArray = nullptr;
 
@@ -1455,7 +1496,7 @@ class skiplist {
             }
         }
 
-        bool SplitSegment(Segment_pt *root,SNode** preds,K *_keys,int*  _values,int _size,K _start,K _stop){
+        bool SplitSegment(Segment_pt *root,SNode** preds,K *_keys,V *_values,int _size,K _start,K _stop){
             //1. partition array
             int st = 0,ed =0;//the rank of the first/last+1 element of one segment
             GreedyPLR* plr = new GreedyPLR(gamma);
@@ -1466,12 +1507,12 @@ class skiplist {
             for (int i = 0; i < _size; i++) {
                 Segment* seg_res = nullptr;
                 #if PLR_DATA_PREPROCESS
-                seg_res = plr->Process(static_cast<double>(_keys[i]) - static_cast<double>(_keys[st]), static_cast<double>(i-st));
+                seg_res = plr->Process(static_cast<M>(_keys[i]) - static_cast<M>(_keys[st]), static_cast<M>(i-st));
                 #else
-                if(_stop - _start > 0x7fffffff)
-                    seg_res = plr->Process(static_cast<double>(_keys[i]), static_cast<double>(i-st));
-                else
-                    seg_res = plr->Process(static_cast<double>(_keys[i]) - static_cast<double>(_keys[st]), static_cast<double>(i-st));
+                // if(_stop - _start > 0x7fffffff)//TODO:需要随着key类型及数据范围调整
+                    seg_res = plr->Process(static_cast<M>(_keys[i]), static_cast<M>(i-st));
+                // else
+                    // seg_res = plr->Process(static_cast<M>(_keys[i]) - static_cast<M>(_keys[st]), static_cast<M>(i-st));
                 #endif
                                 
                 if(seg_res) {
@@ -1511,10 +1552,10 @@ class skiplist {
 
             split_segments[0] = root;
             subtree *root_dataarray = nullptr;
-            unsigned int split_lower_bound = 0;//the right bound of the first segment node after split
+            K split_lower_bound = 0;//the right bound of the first segment node after split
             for(int i = 0;i<seg_size;i++){
                 int height_tmp=1,ed,st=segment_stIndex[i];
-                unsigned int base,bound;
+                K base,bound;
                 //2.1 set height_tmp,base
                 if(i == 0){
                     base = _start;
@@ -1654,7 +1695,7 @@ class skiplist {
             head_seg = reinterpret_cast<Segment_pt*>(pr_);
             int cnt = 0;
             SNode* cur = head_seg->Next();
-            while(cur->Key != UNINT_MAX){
+            while(cur->Key != KeyMax){
                 if(write_){
                     auto ESIZE = reinterpret_cast<Segment_pt*>(cur)->DataArray->size.load(std::memory_order_relaxed);
                     string kk = to_string(cur->Key)+"\t"+to_string(reinterpret_cast<Segment_pt*>(cur)->bound)+"\t"+to_string(ESIZE)+"\t"+
@@ -1679,7 +1720,7 @@ class skiplist {
             }
             //compute index and segment node size
             Segment_pt *n=nullptr;
-            while(x->Key != UNINT_MAX){
+            while(x->Key != KeyMax){
                 n = reinterpret_cast<Segment_pt*>(x);
                 //index layer
                 space_sum += (sizeof(Index) * n->level);
@@ -1707,12 +1748,12 @@ class skiplist {
             vector<SNode*> left_index(MaxLevel+1,nullptr);//store the all level SNode of head_
             vector<SNode*> right_index(MaxLevel+1,nullptr);//store the all level SNode of tail_
             head_ = NewIndexArray(MaxLevel,0,0,true,left_index);
-            tail_ = NewIndexArray(MaxLevel,UNINT_MAX,UNINT_MAX,true,right_index);
+            tail_ = NewIndexArray(MaxLevel,KeyMax,KeyMax,true,right_index);
 
             int level_idx1 = RandLevel();
             vector<SNode*> middle_index(level_idx1+1,nullptr);//store the all level SNode of Idx1
-            // SNode* Idx1 = NewIndexArray(level_idx1,1,UNINT_MAX,middle_index);
-            NewIndexArray(level_idx1,1,UNINT_MAX,false,middle_index);
+            // SNode* Idx1 = NewIndexArray(level_idx1,1,KeyMax,middle_index);
+            NewIndexArray(level_idx1,1,KeyMax,false,middle_index);
 
             //update the height of skiplist
             int max_height = 1;
