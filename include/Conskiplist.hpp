@@ -41,11 +41,11 @@ typedef long double ModelType;
 #define Epslion 1e-8
 #define LINAERITY 0.98
 #define USEPLR 0//now means not use plr's model to rebuild segment 
-#define Gm 64
+#define Gm 32
 #define MAX_DEPTH 6
-#define INIT_DEPTH 3//3
+#define INIT_DEPTH 6//3
 #define INSERT_ROUTE 0
-#define SEGMENT_MAX_SIZE 2e5
+#define SEGMENT_MAX_SIZE 1e5
 #define WRITESEG 0
 #define DELTA_INSERT 2e5
 #define IsREAD_THREAD 1
@@ -1109,7 +1109,7 @@ class skiplist {
             
             //reset segment max size when build model or split
             void SetSegMax(int slot_,int esize,K key_space){
-                SegmentMaxSize = min((K)(2e5),key_space);
+                SegmentMaxSize = min((K)(SEGMENT_MAX_SIZE),key_space);
                 // SegmentMaxSize = ComputeSegmentMaxSize(slot_,esize,key_space);
             }
 
@@ -1177,7 +1177,7 @@ class skiplist {
                 if(h_ > max_height){
                     max_height = h_;
                 }
-                if(max_height > depth_cap || size > 2e5){
+                if(max_height > depth_cap || size > SEGMENT_MAX_SIZE){
                     state = 1;//busy for rebuild
                 }
                 work_cnt--;
@@ -1532,7 +1532,7 @@ class skiplist {
             const auto start_time = std::chrono::steady_clock::now();
             // unsigned key_space = n->stop - n->start;
             //new_segment_max_size
-            if(ESIZE>2e5){//split
+            if(ESIZE>SEGMENT_MAX_SIZE){//split
                 // const auto time_stamp = std::chrono::steady_clock::now();
                 // std::cout<<ESIZE<<" split start time stamp:"<<time_stamp.time_since_epoch().count()<<std::endl;
                 K* keys = new K[ESIZE];
