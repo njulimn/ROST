@@ -345,6 +345,36 @@ class skiplist {
         };
 
         class Semaphore;
+        typedef struct spinlock {
+            std::atomic<bool> lock_ = {0};
+
+            void lock() noexcept {
+                for (;;) {
+                // Optimistically assume the lock is free on the first try
+                if (!lock_.exchange(true, std::memory_order_acquire)) {
+                    return;
+                }
+                // Wait for lock to be released without generating cache misses
+                while (lock_.load(std::memory_order_relaxed)) {
+                    // Issue X86 PAUSE or ARM YIELD instruction to reduce contention between
+                    // hyper-threads
+                    __builtin_ia32_pause();
+                }
+                }
+            }
+
+            bool try_lock() noexcept {
+                // First do a relaxed load to check if lock is free in order to prevent
+                // unnecessary cache misses if someone does while(!try_lock())
+                return !lock_.load(std::memory_order_relaxed) &&
+                    !lock_.exchange(true, std::memory_order_acquire);
+            }
+
+            void unlock() noexcept {
+                lock_.store(false, std::memory_order_release);
+            }
+
+        }slock;
         struct node{
             K key;
             V value;
@@ -407,7 +437,9 @@ class skiplist {
             std::pair<bool,V> find_key_in_subtree(K key){
                 subtree* n = this;
                 int pos = n->predict(key);
-                while(!n->mlock->try_lock()){;}
+                while(!n->TryLockItem(pos)){
+                    // printf("try lock %lld 's %d item failed\n",n,pos);
+                }
                 // n->LockItem(pos);
                 while(1){
                     if (BITMAP_GET(n->none_bitmap, pos) == 1) {
@@ -426,8 +458,9 @@ class skiplist {
                         subtree* next_subtree = n->items[pos].comp.child;
                         n->ReleaseItem(pos);
                         int pos_next = next_subtree->predict(key);
-                        // next_subtree->LockItem(pos_next);
-                        while(!next_subtree->mlock->try_lock()){;}
+                        while(!next_subtree->TryLockItem(pos_next)){
+                            // printf("try lock %lld 's %d item failed\n",next_subtree,pos_next);
+                        }
                         n = next_subtree;
                         pos = pos_next;
                     }
@@ -497,14 +530,21 @@ class skiplist {
                 
             }
 
+            inline bool TryLockItem(int n){
+                // printf("try to lock %lld 's %d item\n",this,n);
+                return this->mlock[n/BITMAP_WIDTH].try_lock();
+            }
+
             //get the lock of n->items[pos]
             inline void LockItem(int n){
-                this->mlock->lock();
+                this->mlock[n/BITMAP_WIDTH].lock();
+                // printf("lock %lld 's %d item\n",this,n);
             }
 
             //release the lock of n->items[pos]
             inline void ReleaseItem(int n){
-                this->mlock->unlock();
+                this->mlock[n/BITMAP_WIDTH].unlock();
+                // printf("unlock %lld 's %d item\n",this,n);
             }
 
             long long SpaceSize(){
@@ -528,7 +568,7 @@ class skiplist {
             M slope = 0,intercept = 0;
             K start = KeyMax,stop=KeyMax;
             Item* items = nullptr;
-            std::mutex *mlock = nullptr;
+            slock *mlock = nullptr;
             bitmap_t* none_bitmap = nullptr; // 1 means None, 0 means Data or Child
             bitmap_t* child_bitmap = nullptr; // 1 means Child. will always be 0 when none_bitmap is 1
         };
@@ -560,6 +600,7 @@ class skiplist {
                     const int bitmap_size = BITMAP_SIZE(n->num_items);
                     delete_bitmap(n->none_bitmap, bitmap_size);
                     delete_bitmap(n->child_bitmap, bitmap_size);
+                    delete_slock(n->mlock,bitmap_size);
                     delete_subtree(n, 1);
                 }
             }
@@ -592,6 +633,19 @@ class skiplist {
                 bitmap_allocator.deallocate(x, n);
             }
                        
+            std::allocator<slock> slock_allocator;
+            slock* new_slock(int n){
+                slock *x = slock_allocator.allocate(n);
+                if(x!=nullptr){
+                    return x;
+                }
+                std::cout<<"allocate failed"<<std::endl;
+                return nullptr;
+            }
+            void delete_slock(slock* x,int n){
+                slock_allocator.deallocate(x,n);
+            }
+
             subtree* build_tree_none(K st,K ed){
                 subtree* n = new_subtree(1);
                 n->is_two = 0;
@@ -602,7 +656,9 @@ class skiplist {
                 n->stop = ed;
                 n->items = new_items(1);
                 memset(n->items,0,sizeof(Item));
-                n->mlock = new mutex();
+                n->mlock = new_slock(1);
+                n->TryLockItem(0);
+                n->ReleaseItem(0);
                 n->none_bitmap = new_bitmap(1);
                 n->none_bitmap[0] = 0;
                 BITMAP_SET(n->none_bitmap, 0);
@@ -621,8 +677,13 @@ class skiplist {
                     n->num_items = 512;
                     n->items = new_items(n->num_items);
                     memset(n->items,0,(n->num_items)*sizeof(Item));
-                    n->mlock = new mutex();
+                    
                     const int bitmap_size = BITMAP_SIZE(n->num_items);
+                    n->mlock = new_slock(bitmap_size);
+                    for(int i = 0;i<bitmap_size;i++){
+                        n->TryLockItem(i*8);
+                        n->ReleaseItem(i*8);
+                    }
                     n->none_bitmap = new_bitmap(bitmap_size);
                     n->child_bitmap = new_bitmap(bitmap_size);
                     for(int i = 0;i<bitmap_size;i++){
@@ -673,13 +734,17 @@ class skiplist {
                     n->num_items = 8;
                     n->items = new_items(n->num_items);
                     memset(n->items,0,(n->num_items)*sizeof(Item));
-                    n->mlock = new mutex();
+                    n->mlock = new_slock(1);
+                    n->TryLockItem(0);
+                    n->ReleaseItem(0);
                     n->none_bitmap = new_bitmap(1);
                     n->child_bitmap = new_bitmap(1);
                     n->none_bitmap[0] = 0xff;
                     n->child_bitmap[0] = 0;
                 }else{
                     n = tree_pool.top();
+                    n->TryLockItem(0);
+                    n->ReleaseItem(0);
                     tree_pool.pop();
                 }
                 ReleasePool();
@@ -752,7 +817,8 @@ class skiplist {
                 subtree* n = DataArray;
                 int pos = n->predict(key);
                 StateType state_raw;
-                n->mlock->lock();
+                // n->mlock->lock();
+                n->LockItem(pos);
                 element_cnt = n->size.load(std::memory_order_acquire) + 1;
                 state_raw = BITMAP_GET(n->none_bitmap, pos) == 1?0:BITMAP_GET(n->child_bitmap, pos)+1;
                 // bool duplicate = false;
@@ -764,12 +830,14 @@ class skiplist {
                         n->items[pos].comp.data.key = key;
                         n->items[pos].comp.data.value = value;
                         n->size.fetch_add(1, std::memory_order_acquire);
-                        n->mlock->unlock();
+                        // n->mlock->unlock();
+                        n->ReleaseItem(pos);
                         break;
                     }else if(state_raw == ItemState::Element){
                         if(n->items[pos].comp.data.key == key){
                             n->items[pos].comp.data.value = value;
-                            n->mlock->unlock();
+                            // n->mlock->unlock();
+                            n->ReleaseItem(pos);
                             for(int i = 0;i<path_size-1;i++){
                                 route[i]->size.fetch_sub(1,std::memory_order_acquire);
                             }
@@ -786,16 +854,19 @@ class skiplist {
                         n->items[pos].comp.child = next_subtree;
                         n->size.fetch_add(1, std::memory_order_acquire);
                         path_size++;
-                        n->mlock->unlock();
+                        // n->mlock->unlock();
+                        n->ReleaseItem(pos);
                         collision++;
                         break;
                     }else{//ItemState::Subtree
                         n->size.fetch_add(1, std::memory_order_acquire);
                         route.push_back(n);
                         subtree* next_n = n->items[pos].comp.child;//n->items[pos].comp.child;
-                        n->mlock->unlock();
+                        // n->mlock->unlock();
+                        n->ReleaseItem(pos);
                         int next_pos = next_n->predict(key);
-                        next_n->mlock->lock();
+                        // next_n->mlock->lock();
+                        next_n->LockItem(next_pos);
                         state_raw = BITMAP_GET(next_n->none_bitmap, next_pos) == 1?0:BITMAP_GET(next_n->child_bitmap, next_pos)+1;
                         n = next_n;
                         pos = next_pos;
@@ -839,6 +910,8 @@ class skiplist {
                             memset(n->items,0,(n->num_items)*sizeof(Item));
                             n->none_bitmap[0] = 0xff;
                             n->child_bitmap[0] = 0;
+                            n->TryLockItem(0);
+                            n->ReleaseItem(0);
                             while(!CASPool()){;}
                             tree_pool.push(n);
                             ReleasePool();
@@ -847,6 +920,7 @@ class skiplist {
                             const int bitmap_size = BITMAP_SIZE(n->num_items);
                             delete_bitmap(n->none_bitmap, bitmap_size);
                             delete_bitmap(n->child_bitmap, bitmap_size);
+                            delete_slock(n->mlock,bitmap_size);
                             delete_subtree(n, 1);
                         }
                     }
@@ -936,8 +1010,13 @@ class skiplist {
                         #endif
                         n->items = new_items(n->num_items);
                         memset(n->items,0,n->num_items*sizeof(Item));
-                        n->mlock = new mutex();
+                        
                         const int bitmap_size = BITMAP_SIZE(n->num_items);
+                        n->mlock = new_slock(bitmap_size);
+                        for(int i = 0;i<bitmap_size;i++){
+                            n->TryLockItem(i*8);
+                            n->ReleaseItem(i*8);
+                        }
                         n->none_bitmap = new_bitmap(bitmap_size);
                         n->child_bitmap = new_bitmap(bitmap_size);
                         memset(n->none_bitmap, 0xff, sizeof(bitmap_t) * bitmap_size);
@@ -1001,7 +1080,9 @@ class skiplist {
                     n->num_items = 8;
                     n->items = new_items(n->num_items);
                     memset(n->items,0,(n->num_items)*sizeof(Item));
-                    n->mlock = new mutex();
+                    n->mlock = new_slock(1);
+                    n->TryLockItem(0);
+                    n->ReleaseItem(0);
                     n->none_bitmap = new_bitmap(1);
                     n->child_bitmap = new_bitmap(1);
                     n->none_bitmap[0] = 0xff;
