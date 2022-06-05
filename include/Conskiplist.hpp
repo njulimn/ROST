@@ -41,7 +41,7 @@ typedef long double ModelType;
 #define Epslion 1e-8
 #define LINAERITY 0.98
 #define USEPLR 0//now means not use plr's model to rebuild segment 
-#define Gm 32
+#define Gm 16
 #define MAX_DEPTH 6
 #define INIT_DEPTH 6//3
 #define INSERT_ROUTE 0
@@ -743,8 +743,8 @@ class skiplist {
                     n->child_bitmap[0] = 0;
                 }else{
                     n = tree_pool.top();
-                    n->TryLockItem(0);
-                    n->ReleaseItem(0);
+                    // n->TryLockItem(0);
+                    // n->ReleaseItem(0);
                     tree_pool.pop();
                 }
                 ReleasePool();
@@ -813,7 +813,7 @@ class skiplist {
                 this->DataArray->find_key_in_subtree(key1,key2,result);
             }
         
-            void insert_subtree(K key,V value,int &path_size,int &element_cnt,long long &collision){
+            void insert_subtree(K key,V value,int &path_size,subtree** route_,int &element_cnt,long long &collision){
                 subtree* n = DataArray;
                 int pos = n->predict(key);
                 StateType state_raw;
@@ -822,7 +822,6 @@ class skiplist {
                 element_cnt = n->size.load(std::memory_order_acquire) + 1;
                 state_raw = BITMAP_GET(n->none_bitmap, pos) == 1?0:BITMAP_GET(n->child_bitmap, pos)+1;
                 // bool duplicate = false;
-                std::vector<subtree*> route;
                 while(1){
                     path_size++;
                     if(state_raw == ItemState::Empty){
@@ -839,7 +838,7 @@ class skiplist {
                             // n->mlock->unlock();
                             n->ReleaseItem(pos);
                             for(int i = 0;i<path_size-1;i++){
-                                route[i]->size.fetch_sub(1,std::memory_order_acquire);
+                                route_[i]->size.fetch_sub(1,std::memory_order_acquire);
                             }
                             break;
                         }
@@ -860,7 +859,8 @@ class skiplist {
                         break;
                     }else{//ItemState::Subtree
                         n->size.fetch_add(1, std::memory_order_acquire);
-                        route.push_back(n);
+                        RT_ASSERT(path_size < MAX_DEPTH*2);
+                        route_[path_size-1] = n;
                         subtree* next_n = n->items[pos].comp.child;//n->items[pos].comp.child;
                         // n->mlock->unlock();
                         n->ReleaseItem(pos);
@@ -1108,7 +1108,7 @@ class skiplist {
             }
             
             //reset segment max size when build model or split
-            void SetSegMax(int slot_,int esize,K key_space){
+            inline void SetSegMax(int slot_,int esize,K key_space){
                 SegmentMaxSize = min((K)(SEGMENT_MAX_SIZE),key_space);
                 // SegmentMaxSize = ComputeSegmentMaxSize(slot_,esize,key_space);
             }
@@ -1494,7 +1494,7 @@ class skiplist {
         }
 
         //skiplist add a key 
-        bool Add(K key,V value,int &path_depth,long long &scan_time,int &split_cnt,long long &collision){
+        bool Add(K key,V value,subtree** route_,int &path_depth,long long &scan_time,int &split_cnt,long long &collision){
             SNode* preds[MaxLevel+1];
             for(int i =0;i<=MaxLevel;i++){
                 preds[i] = nullptr;
@@ -1506,7 +1506,7 @@ class skiplist {
                     if(noskip){
                         //work_cnt++ so won't rebuild/split
                         int after_insert_size = 0;
-                        locate->insert_subtree(key,value,path_depth,after_insert_size,collision);
+                        locate->insert_subtree(key,value,path_depth,route_,after_insert_size,collision);
                         bool rebuild = locate->delta_inserts.Signal(path_depth,after_insert_size);
                         if(rebuild){
                             //rebuild or split

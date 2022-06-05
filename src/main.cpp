@@ -13,7 +13,7 @@
 
 #define MM 1000000
 #define NUMBERDATA (64*MM)
-#define SkiplistMaxLevel (int)(log(3029)/log(2))//20//(int)(log(1500)/log(2))
+#define SkiplistMaxLevel (int)(log(5882)/log(2))//20//(int)(log(1500)/log(2))
 #define THREAD_NUMBER 32
 #define NOFINDDEBUG 0
 #define QUERY_TEST 0
@@ -65,14 +65,14 @@ void test_insert(const int id,const int bound_l,const int bound_r ,int dijiduan)
     int SplitCnt = 0;
     long long scan_on_rebuild_topk = 0;
     long long collision_ = 0;
+    skiplist<KeyType,VaueType,ModelType>::subtree** route = (skiplist<KeyType,VaueType,ModelType>::subtree**)malloc(sizeof(skiplist<KeyType,VaueType,ModelType>::subtree*)*MAX_DEPTH*2);
     for(int i = bound_l;i<bound_r;i++){
         if(input_data[i] == 0 || input_data[i] == KeyMax)
             continue;
-        // list->Add(input_data[i],i,cnt);
         int cnt = 0;
         long long scan = 0;
         long long collision_cnt = 0;
-        if(list->Add(input_data[i],i,cnt,scan,SplitCnt,collision_cnt)){
+        if(list->Add(input_data[i],i,route,cnt,scan,SplitCnt,collision_cnt)){
             rebuild_cnt++;
         }
         scan_on_rebuild_topk+=scan;
@@ -82,6 +82,7 @@ void test_insert(const int id,const int bound_l,const int bound_r ,int dijiduan)
     scan_time_on_check[id] = scan_on_rebuild_topk;
     split_total[id] = SplitCnt;
     collision_total[id] = collision_;
+    free(route);
 }
 
 void test_query(const int id,const int bound_l,const int bound_r ){
@@ -92,7 +93,7 @@ void test_query(const int id,const int bound_l,const int bound_r ){
             continue;
         // list->Lookup(input_data[i]);
         res = list->Lookup(input_data[i]);
-        if(!(res.first) || res.second != i){
+        if(!(res.first)){
             nofind++;
         }
     }
@@ -105,14 +106,14 @@ void WorkloadTest(int id){
     int bound_r = (id+1)*(write_dis);
     // printf("range[%d,%d)\n",bound_l,bound_r);
     int SplitCnt = 0;
+    skiplist<KeyType,VaueType,ModelType>::subtree** route = (skiplist<KeyType,VaueType,ModelType>::subtree**)malloc(sizeof(skiplist<KeyType,VaueType,ModelType>::subtree*)*MAX_DEPTH*2);
     for(int i = bound_l;i<bound_r;i++){
         if(input_data[i] == 0 || input_data[i] == KeyMax)
             continue;
-        // list->Add(input_data[i],i,cnt);
         int cnt = 0;
         long long scan = 0;
         long long collision_cnt = 0;
-        list->Add(input_data[i],i,cnt,scan,SplitCnt,collision_cnt);
+        list->Add(input_data[i],i,route,cnt,scan,SplitCnt,collision_cnt);
     }
     // std::cout<<"insert finish"<<std::endl;
     bound_l = read_offset + id*(read_dis);
@@ -122,6 +123,7 @@ void WorkloadTest(int id){
             continue;
         auto res = list->Lookup(input_data[i]);
     }
+    free(route);
 }
 
 void WorkloadInserPart(int id){
@@ -129,15 +131,16 @@ void WorkloadInserPart(int id){
     int bound_r = (id+1)*(write_dis);
     // printf("range[%d,%d)\n",bound_l,bound_r);
     int SplitCnt = 0;
+    skiplist<KeyType,VaueType,ModelType>::subtree** route = (skiplist<KeyType,VaueType,ModelType>::subtree**)malloc(sizeof(skiplist<KeyType,VaueType,ModelType>::subtree*)*MAX_DEPTH*2);
     for(int i = bound_l;i<bound_r;i++){
         if(input_data[i] == 0 || input_data[i] == KeyMax)
             continue;
-        // list->Add(input_data[i],i,cnt);
         int cnt = 0;
         long long scan = 0;
         long long collision_cnt = 0;
-        list->Add(input_data[i],i,cnt,scan,SplitCnt,collision_cnt);
+        list->Add(input_data[i],i,route,cnt,scan,SplitCnt,collision_cnt);
     }
+    free(route);
 }
 
 void WorkloadQueryPart(int id){
@@ -160,6 +163,7 @@ void Insert_Part(int &kk,int id){
         partial_r[i] = 0;
     }
     const auto start_time = std::chrono::steady_clock::now();
+    // std::cout<<"start time:\t"<<start_time.time_since_epoch().count()<<std::endl;
     for(int idx=0; idx < THREAD_NUMBER; idx++){
         threads.push_back(thread(WorkloadTest,idx));
     } 
