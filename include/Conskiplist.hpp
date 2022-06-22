@@ -26,7 +26,7 @@ typedef uint8_t bitmap_t;
 
 typedef unsigned long long KeyType;
 typedef int VaueType;
-typedef long double ModelType; 
+typedef long double ModelType; //long double
 #define KeyMax (ULLONG_MAX)
 
 #define BITMAP_WIDTH (sizeof(bitmap_t) * 8)
@@ -39,7 +39,7 @@ typedef long double ModelType;
 #define p 0.5
 #define UNINT_MAX 0xffffffff
 #define Epslion 1e-8
-#define LINAERITY 0.98
+#define LINAERITY 0.8
 #define USEPLR 0//now means not use plr's model to rebuild segment 
 #define Gm 16
 #define MAX_DEPTH 6
@@ -52,6 +52,7 @@ typedef long double ModelType;
 #define StateType int
 #define DEBUG_ASSERT 1
 #define PLR_DATA_PREPROCESS 0 //control whether data of plr is preprocessed
+#define USINGLinearity 0
 
 // runtime assert
 #define RT_ASSERT(expr) \
@@ -136,7 +137,6 @@ enum ItemState {
     Empty = 0, Element, Subtree
 };
 
-//M 指示plr 中元素类型
 template<class K, class V,class M>
 class skiplist {
     public:
@@ -413,7 +413,7 @@ class skiplist {
         struct subtree{
             //--------------------------subtree operation--------------------------//
             inline int predict(K key){
-                M v = this->slope * (static_cast<long double>(key)) + this->intercept;
+                M v = (static_cast<long double>(this->slope)) * (static_cast<long double>(key)) + (static_cast<long double>(this->intercept));
                 if(v > std::numeric_limits<int>::max() / 2) {
                     return this->num_items - 1;
                 }
@@ -421,17 +421,6 @@ class skiplist {
                     return 0;
                 }
                 return std::min(this->num_items - 1, static_cast<int>(v));
-            }
-
-            //compute the range of subtree
-            std::pair<K, K> computeRange(int pos){
-                K start_ = (static_cast<long double>(pos) - this->intercept)/(this->slope * 1000.0)*1000.0;
-                K stop_ = (static_cast<long double>(pos) + 1 - this->intercept)/(this->slope * 1000.0)*1000.0;
-                if(pos == 0)
-                    start_ = this->start;
-                if(pos == this->num_items-1)
-                    stop_ = this->stop;
-                return {start_,stop_};
             }
 
             std::pair<bool,V> find_key_in_subtree(K key){
@@ -548,25 +537,28 @@ class skiplist {
             }
 
             long long SpaceSize(){
-                long long res = sizeof(subtree) + sizeof(mutex);
+                long long res = sizeof(is_two) + sizeof(size) + sizeof(num_items) + 
+                    sizeof(M)*2 + sizeof(bitmap_t*)*2;
+                long long child_cnt = 0;
                 const int bitmap_size_ = BITMAP_SIZE(num_items);
                 res += (sizeof(bitmap_t) * bitmap_size_ * 2);
-                res += (sizeof(Item) * num_items);
+                // res += (sizeof(Item) * num_items);
                 for(int i = 0;i<num_items;i++){
                     if(BITMAP_GET(none_bitmap,i) == 0){
                         if(BITMAP_GET(child_bitmap,i) == 1){
                             res += ((items[i].comp.child)->SpaceSize());
+                            child_cnt++;
                         }
                     }
                 }
                 return res;
             }
 
-            int is_two = 0; // is special node for only two keys
+            bool is_two = 0; // is special node for only two keys
             std::atomic<int> size;
             int num_items = 0; // size of items
             M slope = 0,intercept = 0;
-            K start = KeyMax,stop=KeyMax;
+            // K start = KeyMax,stop=KeyMax;
             Item* items = nullptr;
             slock *mlock = nullptr;
             bitmap_t* none_bitmap = nullptr; // 1 means None, 0 means Data or Child
@@ -652,8 +644,6 @@ class skiplist {
                 n->size.store(0, std::memory_order_release);
                 n->num_items = 1;
                 n->slope = n->intercept = 0;
-                n->start = st;
-                n->stop = ed;
                 n->items = new_items(1);
                 memset(n->items,0,sizeof(Item));
                 n->mlock = new_slock(1);
@@ -697,9 +687,6 @@ class skiplist {
                 //     tree_pool.pop();
                 // }
                 // ReleasePool();
-
-                n->start = start;
-                n->stop = stop;  
                 
                 const long double mid1_key = (static_cast<long double>(stop) - static_cast<long double>(start))/3.0;
                 const long double mid2_key = mid1_key*2;
@@ -720,7 +707,7 @@ class skiplist {
                 return n;
             }
 
-            subtree* build_tree_two(K key1, V value1, K key2, V value2,K start=0,K stop=0,subtree* x = nullptr){
+            subtree* build_tree_two(K key1, V value1, K key2, V value2){
                 if (key1 > key2) {
                     std::swap(key1, key2);
                     std::swap(value1, value2);
@@ -748,14 +735,6 @@ class skiplist {
                     tree_pool.pop();
                 }
                 ReleasePool();
-
-                if(!x){
-                    n->start = start;
-                    n->stop = stop;  
-                }else{
-                    n->start = x->start;
-                    n->stop = x->stop;
-                }
                 
                 const long double mid1_key = static_cast<long double>(key1);
                 const long double mid2_key = static_cast<long double>(key2);
@@ -843,11 +822,8 @@ class skiplist {
                             break;
                         }
                         subtree* next_subtree = nullptr;
-                        //compute
-                        std::pair<K, K>line = n->computeRange(pos);
                         next_subtree = build_tree_two(key, value,n->items[pos].comp.data.key, 
-                        n->items[pos].comp.data.value,min(line.first,min(key,n->items[pos].comp.data.key)),
-                        line.second);   
+                        n->items[pos].comp.data.value);   
                         //replace
                         BITMAP_SET(n->child_bitmap, pos);
                         n->items[pos].comp.child = next_subtree;
@@ -927,7 +903,83 @@ class skiplist {
                 }
             }
 
-            std::pair<subtree*,int> rebuild_tree(K *_keys,V * _values,int _size,K start,K stop,bool plr = false,M top_slope = 0,M top_intercept = 0){
+            long double ScanAndDestroySubtreeWithPCCs(subtree* root,K *keys,V *values,int ESIZE, bool destory = true){
+                typedef std::pair<int, subtree*> Seg; // <begin, subtree*>
+                std::stack<Seg> s;
+                s.push(Seg(0, root));
+                long double keylen = static_cast<long double>(ESIZE);
+                long double sum_of_key = 0;//sigma(x-x0)
+                long double sum_of_y = (keylen-1)* keylen/2.0;//simga(y)
+                long double E_Y = ( keylen-1)/2.0;//E(Y)
+                long double sum_of_keyMuly = 0;//sigma((x-x0)y)
+                long double sum_of_key2 = 0;//sigma((x-x0)^2)
+                long double sum_of_y2 = (keylen-1) * keylen * (2*keylen - 1)/6.0;//sigma(y^2)
+                long double  key_0 = -1;//x0
+                while (!s.empty()) {
+                    int begin = s.top().first;
+                    subtree* n = s.top().second;
+                    s.pop();
+                    for (int i = 0; i < n->num_items;i++) {
+                        int none_byte = n->none_bitmap[i/BITMAP_WIDTH];
+                        if(none_byte == 0xff){
+                            i+=7;
+                            continue;
+                        }else if (((none_byte >> ((i) % BITMAP_WIDTH)) & 1) == 0) {
+                            if (BITMAP_GET(n->child_bitmap, i) == 0) {
+                                keys[begin] = n->items[i].comp.data.key;
+                                values[begin] = n->items[i].comp.data.value;
+                                if(key_0 == -1)
+                                    key_0 = static_cast<long double>(keys[begin]);
+                                long double xi = static_cast<long double>(keys[begin])-key_0;
+                                sum_of_key+=(xi);
+                                sum_of_keyMuly+=(xi*static_cast<long double>(begin));
+                                sum_of_key2+=(xi*xi);
+                                begin ++;
+                            } else {
+                                Seg next_seg;
+                                next_seg.first = begin;
+                                next_seg.second = n->items[i].comp.child;
+                                s.push(next_seg);
+                                begin += n->items[i].comp.child->size.load(std::memory_order_acquire);
+                            }
+                        }
+                    }
+                    if (destory) {
+                        if(n->is_two){
+                            n->size.store(2, std::memory_order_release);
+                            n->num_items = 8;
+                            memset(n->items,0,(n->num_items)*sizeof(Item));
+                            n->none_bitmap[0] = 0xff;
+                            n->child_bitmap[0] = 0;
+                            n->TryLockItem(0);
+                            n->ReleaseItem(0);
+                            while(!CASPool()){;}
+                            tree_pool.push(n);
+                            ReleasePool();
+                        }else{
+                            delete_items(n->items, n->num_items);
+                            const int bitmap_size = BITMAP_SIZE(n->num_items);
+                            delete_bitmap(n->none_bitmap, bitmap_size);
+                            delete_bitmap(n->child_bitmap, bitmap_size);
+                            delete_slock(n->mlock,bitmap_size);
+                            delete_subtree(n, 1);
+                        }
+                    }
+                }
+
+                long double E_key = sum_of_key/keylen;
+                long double st_x = sum_of_key2 - sum_of_key*E_key;
+                long double st_y = sum_of_y2 - sum_of_y*E_Y;
+                if(st_x > 1e-6 && st_y > 1e-6 ){
+                    long double PCCs = sum_of_keyMuly - sum_of_key*E_Y;
+                    PCCs/=sqrt(st_x);
+                    PCCs/=sqrt(st_y);
+                    return PCCs;
+                }
+                return 1;
+            }
+
+            std::pair<subtree*,int> rebuild_tree(K *_keys,V * _values,int _size,bool plr = false,M top_slope = 0,M top_intercept = 0){
                 //plr means whether to use the model from plr
                 //top_slope , top_intercept are the model from the plr
                 RT_ASSERT(_size > 1);
@@ -939,8 +991,6 @@ class skiplist {
                 } Seg;
                 std::queue<Seg> s;
                 subtree* ret = new_subtree(1);
-                ret->start = start;
-                ret->stop = stop;
                 s.push({0, _size, 1, ret});
                 int max_depth = 0;
                 while(!s.empty()){
@@ -955,7 +1005,7 @@ class skiplist {
                     #endif
                     if(end-begin == 2){
                         //start and stop are set up in advance
-                        subtree* _ = build_tree_two(_keys[begin], _values[begin], _keys[begin+1], _values[begin+1],n->start,n->stop);
+                        subtree* _ = build_tree_two(_keys[begin], _values[begin], _keys[begin+1], _values[begin+1]);
                         memcpy(n, _, sizeof(subtree));//shalow copy
                         delete_subtree(_, 1);
                         if(lvl == 1){
@@ -1051,9 +1101,6 @@ class skiplist {
                                 BITMAP_CLEAR(n->none_bitmap, item_i);
                                 BITMAP_SET(n->child_bitmap, item_i);
                                 n->items[item_i].comp.child = new_subtree(1);
-                                std::pair<K, K> line = n->computeRange(item_i);
-                                n->items[item_i].comp.child->start = min(line.first,keys[offset]);
-                                n->items[item_i].comp.child->stop = line.second;
                                 s.push({begin + offset, begin + next, lvl + 1, n->items[item_i].comp.child});
                             }
                             if (next >= size) {
@@ -1065,10 +1112,6 @@ class skiplist {
                         }
                     }   
                 }
-                #if DEBUG_ASSERT
-                RT_ASSERT(ret->start == start);
-                RT_ASSERT(ret->stop == stop);
-                #endif
                 return {ret,max_depth};
             }
 
@@ -1087,8 +1130,6 @@ class skiplist {
                     n->child_bitmap = new_bitmap(1);
                     n->none_bitmap[0] = 0xff;
                     n->child_bitmap[0] = 0;
-                    n->start = 0;
-                    n->stop = 0;
                     n->intercept = 0;
                     n->slope = 0;
                     tree_pool.push(n);
@@ -1167,7 +1208,7 @@ class skiplist {
         class Semaphore {
         public:
             //wait_cnt(0),
-            explicit Semaphore(int h_):state(0),max_height(h_),work_cnt(0),depth_cap(INIT_DEPTH){
+            explicit Semaphore(int h_):state(false),max_height(h_),work_cnt(0){
             }
             ~Semaphore(){}
             //true means thread need to rebuild
@@ -1177,11 +1218,11 @@ class skiplist {
                 if(h_ > max_height){
                     max_height = h_;
                 }
-                if(max_height > depth_cap || size > SEGMENT_MAX_SIZE){
-                    state = 1;//busy for rebuild
+                if(max_height > MAX_DEPTH || size > SEGMENT_MAX_SIZE){
+                    state = true;//busy for rebuild
                 }
                 work_cnt--;
-                if(work_cnt == 0 && state == 1){
+                if(work_cnt == 0 && state){
                     // std::cout<<max_height<<std::endl;
                     return true;
                 }
@@ -1193,17 +1234,17 @@ class skiplist {
             //用于rebuild/split结束 和 新建节点完成Index layer连接后
             void SignalForState(int h_=0,int esize=10,int id=0){
                 std::unique_lock<std::mutex> lock(mutex_);
-                state = 0;
+                state = false;
                 if(h_)
                     max_height = h_;
-                if(esize > 5e4)
-                    depth_cap = MAX_DEPTH;
+                // if(esize > 5e4)
+                    // depth_cap = MAX_DEPTH;
                 state_cv.notify_all();
             }
 
             void Block(){
                 std::unique_lock<std::mutex> lock(mutex_);
-                state = 1;
+                state = true;
             }
 
             //false means skip,true means work_cnt++
@@ -1227,10 +1268,10 @@ class skiplist {
 
             std::mutex mutex_;
             std::condition_variable state_cv;
-            int state;
+            bool state;
             int max_height;
             int work_cnt;//Records the current number of threads that are working
-            int depth_cap;
+            // int depth_cap;
         };
         //--------------------------new segment_pt--------------------------//
 
@@ -1239,7 +1280,7 @@ class skiplist {
             if(!n)
                 return NewSegment_pt(base,bound,level,false);
             SNode *newseg = nullptr;
-            int slots = (n->num_items);
+            // int slots = (n->num_items);
             int ele_size = n->size.load(std::memory_order_relaxed);
             if(ele_size < 2){
                 newseg = new Segment_pt(base,bound,level);
@@ -1253,7 +1294,7 @@ class skiplist {
             reinterpret_cast<Segment_pt*>(newseg)->DataArray = n;
             reinterpret_cast<Segment_pt*>(newseg)->CreateMemPool();
             reinterpret_cast<Segment_pt*>(newseg)->SetNext(nullptr);
-            reinterpret_cast<Segment_pt*>(newseg)->SetSegMax(slots,ele_size,bound - base);
+            // reinterpret_cast<Segment_pt*>(newseg)->SetSegMax(slots,ele_size,bound - base);
             return newseg;
         }
         
@@ -1267,7 +1308,7 @@ class skiplist {
             else
                 reinterpret_cast<Segment_pt*>(newseg)->DataArray =  reinterpret_cast<Segment_pt*>(newseg)->build_tree_two_nokey(base,bound);
             reinterpret_cast<Segment_pt*>(newseg)->SetNext(nullptr);
-            reinterpret_cast<Segment_pt*>(newseg)->SetSegMax(8,0,bound - base);
+            // reinterpret_cast<Segment_pt*>(newseg)->SetSegMax(8,0,bound - base);
             return newseg;
         }
         
@@ -1321,9 +1362,9 @@ class skiplist {
         inline int RandLevel(){
             int lvl = 1;
             default_random_engine e(rd());
-            uniform_int_distribution<int>u(0,9);
+            uniform_int_distribution<int>u(1,100);
             for(int i = 0;i<MaxLevel-1;i++){
-                if(u(e) > 4){
+                if(u(e) > 50){
                     break;
                 }
                 lvl++;
@@ -1494,7 +1535,7 @@ class skiplist {
         }
 
         //skiplist add a key 
-        bool Add(K key,V value,subtree** route_,int &path_depth,long long &scan_time,int &split_cnt,long long &collision){
+        bool Add(K key,V value,subtree** route_,int &path_depth,int &split_cnt,long long &collision){
             SNode* preds[MaxLevel+1];
             for(int i =0;i<=MaxLevel;i++){
                 preds[i] = nullptr;
@@ -1510,7 +1551,11 @@ class skiplist {
                         bool rebuild = locate->delta_inserts.Signal(path_depth,after_insert_size);
                         if(rebuild){
                             //rebuild or split
-                            int esize = RebuildSegment(preds,locate,scan_time,split_cnt);
+                            #if USINGLinearity
+                            int esize = RebuildSegmentWithLinearity(preds,locate,split_cnt);
+                            #else
+                            int esize = RebuildSegment(preds,locate,split_cnt);
+                            #endif
                             locate->delta_inserts.SignalForState(INIT_DEPTH,esize);
                             return true;
                         }
@@ -1525,19 +1570,40 @@ class skiplist {
         }
 
         //rebuild or split segment
-        int RebuildSegment(SNode** preds,Segment_pt* locate,long long &scan_time,int &split_cnt){
+        int RebuildSegmentWithLinearity(SNode** preds,Segment_pt* locate,int &split_cnt){
             subtree *n = locate->DataArray;
             const int ESIZE = n->size.load(std::memory_order_acquire);
-            int new_segment_max_size = locate->SegmentMaxSize;
-            const auto start_time = std::chrono::steady_clock::now();
-            // unsigned key_space = n->stop - n->start;
+            K n_start = reinterpret_cast<SNode*>(locate)->Key,n_stop = locate->bound;
+            K* keys = new K[ESIZE];
+            V* values = new V[ESIZE];
+            long double pccs_n = locate->ScanAndDestroySubtreeWithPCCs(n,keys,values,ESIZE);
+            locate->DataArray = nullptr;
+            //new_segment_max_size
+            if(pccs_n < linearity || ESIZE>SEGMENT_MAX_SIZE){//split
+                SplitSegment(locate,preds,keys,values,ESIZE,n_start,n_stop);//SplitSegment already released the write lock of locate
+                int new_size = locate->DataArray->size.load(std::memory_order_acquire);
+                delete[] keys;
+                delete[] values;
+                split_cnt++;
+                return new_size;
+            }else{
+                std::pair<subtree*,int> res_ = locate->rebuild_tree(keys,values,ESIZE);
+                locate->DataArray = res_.first;
+                delete[] keys;
+                delete[] values;
+                return ESIZE;
+            }
+        }
+
+        //rebuild or split segment
+        int RebuildSegment(SNode** preds,Segment_pt* locate,int &split_cnt){
+            subtree *n = locate->DataArray;
+            const int ESIZE = n->size.load(std::memory_order_acquire);
+            K n_start = reinterpret_cast<SNode*>(locate)->Key,n_stop = locate->bound;
             //new_segment_max_size
             if(ESIZE>SEGMENT_MAX_SIZE){//split
-                // const auto time_stamp = std::chrono::steady_clock::now();
-                // std::cout<<ESIZE<<" split start time stamp:"<<time_stamp.time_since_epoch().count()<<std::endl;
                 K* keys = new K[ESIZE];
                 V* values = new V[ESIZE];
-                K n_start = n->start,n_stop = n->stop;
                 locate->scan_and_destroy_subtree(n,keys,values,ESIZE);
                 locate->DataArray = nullptr;
                 SplitSegment(locate,preds,keys,values,ESIZE,n_start,n_stop);//SplitSegment already released the write lock of locate
@@ -1547,32 +1613,20 @@ class skiplist {
                 delete[] keys;
                 delete[] values;
                 split_cnt++;
-                // std::cout<<ESIZE<<"\tsplit"<<std::endl;
-                const auto end_time = std::chrono::steady_clock::now();
-                // std::cout<<"split end time stamp:"<<end_time.time_since_epoch().count()<<std::endl;
-                const auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
-                scan_time+=duration.count();
                 return new_size;
             }else{
-                // string outs = to_string(n->start)+"---"+to_string(n->stop)+"\tsize:"+to_string(ESIZE)+"\n";
-                // std::cout<<outs;
                 K *keys = new K[ESIZE];
                 V *values = new V[ESIZE];
-                K n_start = n->start,n_stop = n->stop;
                 locate->scan_and_destroy_subtree(n,keys,values,ESIZE);
                 locate->DataArray = nullptr;
 
-                std::pair<subtree*,int> res_ = locate->rebuild_tree(keys,values,ESIZE,n_start,n_stop);
+                std::pair<subtree*,int> res_ = locate->rebuild_tree(keys,values,ESIZE);
                 locate->DataArray = res_.first;
-                int new_slot = locate->DataArray->num_items;
-                locate->SetSegMax(new_slot,ESIZE,n_stop - n_start);
+                // int new_slot = locate->DataArray->num_items;
+                // locate->SetSegMax(new_slot,ESIZE,n_stop - n_start);
                 delete[] keys;
                 delete[] values;
-                const auto end_time = std::chrono::steady_clock::now();
-                const auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
-                // std::cout<<"rebuild "<<ESIZE<<"\tkey_space:"<<n_start<<"---"<<n_stop<<std::endl;
                 // new_segment_max_size = locate->SegmentMaxSize;
-                scan_time+=duration.count();
                 return ESIZE;
             }
         }
@@ -1668,11 +1722,11 @@ class skiplist {
                     std::pair<subtree*,int> res_;
                     #if USEPLR
                         if(seg[i]->slope > 0)
-                            res_ = root->rebuild_tree(_keys+st,_values+st,ed-st,base,bound,true,seg[i]->slope,seg[i]->intercept);
+                            res_ = root->rebuild_tree(_keys+st,_values+st,ed-st,true,seg[i]->slope,seg[i]->intercept);
                         else
-                            res_ = root->rebuild_tree(_keys+st,_values+st,ed-st,base,bound);
+                            res_ = root->rebuild_tree(_keys+st,_values+st,ed-st);
                     #else
-                        res_ = root->rebuild_tree(_keys+st,_values+st,ed-st,base,bound);
+                        res_ = root->rebuild_tree(_keys+st,_values+st,ed-st);
                     #endif
                     new_subtree = res_.first;
                 }
@@ -1707,7 +1761,7 @@ class skiplist {
                 }else{
                     root_dataarray = new_subtree;
                     split_lower_bound = bound;
-                    root->SetSegMax(new_subtree->num_items,new_subtree->size.load(std::memory_order_acquire),bound - base);
+                    // root->SetSegMax(new_subtree->num_items,new_subtree->size.load(std::memory_order_acquire),bound - base);
                 }
                   
             }
@@ -1789,6 +1843,32 @@ class skiplist {
             std::cout<<"SegmentNumber:"<<cnt<<std::endl;
         }
 
+        void FoldSegment(){
+            SNode *x = head_;
+            while(x->isIndexNode()){
+                x = reinterpret_cast<Index*>(x)->Down();
+            }
+            x = x->Next();
+            Segment_pt *n=nullptr;
+            while(x->Key != KeyMax){
+                n = reinterpret_cast<Segment_pt*>(x);
+                subtree *seg = n->DataArray;
+                const int ESIZE = seg->size.load(std::memory_order_acquire);
+                if(ESIZE>1){
+                    K *keys = new K[ESIZE];
+                    V *values = new V[ESIZE];
+                    n->scan_and_destroy_subtree(seg,keys,values,ESIZE,false);
+                    n->DataArray = nullptr;
+                    std::pair<subtree*,int> res_ = n->rebuild_tree(keys,values,ESIZE);
+                    n->DataArray = res_.first;
+                    delete[] keys;
+                    delete[] values;
+                }
+                x = x->Next();
+            }
+
+        }
+
         long long SpaceSize(){
             long long space_sum  = 0;
             //skiplist class
@@ -1820,12 +1900,11 @@ class skiplist {
         std::atomic<int> max_height_; 
         int MaxLevel;
 		int gamma;
-        int segment_max_size;
         double linearity;
         SNode* head_;
         SNode* tail_;
         skiplist();
-        skiplist(int MaxLevel,int gamma):max_height_(1),MaxLevel(MaxLevel),gamma(gamma),segment_max_size(SEGMENT_MAX_SIZE),linearity(LINAERITY){
+        skiplist(int MaxLevel,int gamma):max_height_(1),MaxLevel(MaxLevel),gamma(gamma),linearity(LINAERITY){
             vector<SNode*> left_index(MaxLevel+1,nullptr);//store the all level SNode of head_
             vector<SNode*> right_index(MaxLevel+1,nullptr);//store the all level SNode of tail_
             head_ = NewIndexArray(MaxLevel,0,0,true,left_index);

@@ -16,14 +16,15 @@
 #define SkiplistMaxLevel (int)(log(5882)/log(2))//20//(int)(log(1500)/log(2))
 #define THREAD_NUMBER 32
 #define NOFINDDEBUG 0
-#define QUERY_TEST 0
-#define WriteRatio (0.3)
-
+#define QUERY_TEST 1
+#define WriteRatio (1.0)
+#define FOLDKEY 0
+#define SPACEPRINT 1
 
 int read_offset = NUMBERDATA * WriteRatio;
 int write_dis = (read_offset)/THREAD_NUMBER;
 int read_dis = (NUMBERDATA * (1 - WriteRatio)) / THREAD_NUMBER;
-char data_file[] = "/root/LSDataset/wiki/wiki64M73.txt";
+char data_file[] = "/root/LSDataset/twitter/twitter64M01.txt";
 
 KeyType *input_data = new KeyType[NUMBERDATA];
 skiplist<KeyType,VaueType,ModelType> *list = new skiplist<KeyType,VaueType,ModelType>(SkiplistMaxLevel,Gm);
@@ -36,7 +37,7 @@ long long collision_total[THREAD_NUMBER];
 long long insert_time_total[THREAD_NUMBER];
 char search_time[] = "./search_time.csv";
 char insert_time[] = "./insert_time.csv";
-char workload_time[] = "./workload73_time.csv";
+char workload_time[] = "./workload01_time.csv";
 
 using namespace chrono;
 
@@ -57,32 +58,6 @@ void GetDataFromText(char path[]){
     // std::random_device rd;
     // std::mt19937 g(rd());
     // std::shuffle(input_data, input_data+NUMBERDATA, g);
-}
-
-void test_insert(const int id,const int bound_l,const int bound_r ,int dijiduan){
-    long long rebuild_cnt = 0;
-    // int MaxDepth = 1;
-    int SplitCnt = 0;
-    long long scan_on_rebuild_topk = 0;
-    long long collision_ = 0;
-    skiplist<KeyType,VaueType,ModelType>::subtree** route = (skiplist<KeyType,VaueType,ModelType>::subtree**)malloc(sizeof(skiplist<KeyType,VaueType,ModelType>::subtree*)*MAX_DEPTH*2);
-    for(int i = bound_l;i<bound_r;i++){
-        if(input_data[i] == 0 || input_data[i] == KeyMax)
-            continue;
-        int cnt = 0;
-        long long scan = 0;
-        long long collision_cnt = 0;
-        if(list->Add(input_data[i],i,route,cnt,scan,SplitCnt,collision_cnt)){
-            rebuild_cnt++;
-        }
-        scan_on_rebuild_topk+=scan;
-        collision_+=collision_cnt;
-    }
-    partial_r[id] = rebuild_cnt;
-    scan_time_on_check[id] = scan_on_rebuild_topk;
-    split_total[id] = SplitCnt;
-    collision_total[id] = collision_;
-    free(route);
 }
 
 void test_query(const int id,const int bound_l,const int bound_r ){
@@ -111,9 +86,8 @@ void WorkloadTest(int id){
         if(input_data[i] == 0 || input_data[i] == KeyMax)
             continue;
         int cnt = 0;
-        long long scan = 0;
         long long collision_cnt = 0;
-        list->Add(input_data[i],i,route,cnt,scan,SplitCnt,collision_cnt);
+        list->Add(input_data[i],i,route,cnt,SplitCnt,collision_cnt);
     }
     // std::cout<<"insert finish"<<std::endl;
     bound_l = read_offset + id*(read_dis);
@@ -136,9 +110,8 @@ void WorkloadInserPart(int id){
         if(input_data[i] == 0 || input_data[i] == KeyMax)
             continue;
         int cnt = 0;
-        long long scan = 0;
         long long collision_cnt = 0;
-        list->Add(input_data[i],i,route,cnt,scan,SplitCnt,collision_cnt);
+        list->Add(input_data[i],i,route,cnt,SplitCnt,collision_cnt);
     }
     free(route);
 }
@@ -155,7 +128,7 @@ void WorkloadQueryPart(int id){
 
 void Insert_Part(int &kk,int id){
     #if PRFOINSERT
-    string name = "insert.prof";
+    string name = "workload73.prof";
     ProfilerStart(name.c_str());
     #endif
     std::vector<thread> threads;
@@ -222,7 +195,8 @@ int main(){
     GetDataFromText(data_file);
     srand((int)time(0));
     std::cout<<"NUMBERDATA:"<<NUMBERDATA<<"\tTHREAD_NUMBER:"<<THREAD_NUMBER<<std::endl;
-    std::cout<<"SkiplistMaxLevel:"<<SkiplistMaxLevel<<"\tmax segment size:"<<list->segment_max_size<<"\tDELTA_INSERT:"<<DELTA_INSERT<<std::endl;
+    std::cout<<"SkiplistMaxLevel:"<<SkiplistMaxLevel<<"\tmax segment size:"<<SEGMENT_MAX_SIZE<<std::endl
+        <<"DELTA_INSERT:"<<DELTA_INSERT<<"\tLinearity:"<<LINAERITY<<std::endl;
     const auto end_time = std::chrono::steady_clock::now();
     const auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
     std::cout << "prepare time: " << duration.count() << "us"<<std::endl;
@@ -230,9 +204,14 @@ int main(){
     int n = 0;
     Insert_Part(n,0);  
     #if QUERY_TEST
+    #if FOLDKEY
+    list->FoldSegment();
+    #endif
     n = 0;
     Query_Part(n);
     #endif
-
-    std::cout<<"LearnedSkiplist space size:"<<list->SpaceSize() - NUMBERDATA * (sizeof(KeyType)+ sizeof(int)) <<"\tByte"<<std::endl;
+    #if SPACEPRINT
+    string outs = std::to_string(list->SpaceSize())+"\n";
+    write_into_file("./space_size.txt",outs.c_str());
+    #endif
 }
