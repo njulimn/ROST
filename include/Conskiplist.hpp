@@ -1711,8 +1711,12 @@ class skiplist {
                 }
                 preds[l] = pred;
                 RT_ASSERT(preds[l]->Key >= preds[l+1]->Key);
-                if(l)
+                if(l){
                     pred = reinterpret_cast<Index*>(pred)->FindPrecursor(key);
+                }else if(pred->Key == 0){
+                    pred = reinterpret_cast<Index*>(pred)->Down();
+                }
+                    
                 RT_ASSERT(pred);
             }
             //return segment_pt
