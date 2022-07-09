@@ -38,10 +38,11 @@ typedef long double ModelType; //long double
 
 #define p 0.5
 #define UNINT_MAX 0xffffffff
+#define SkiplistMaxLevel (int)(log(5882)/log(2))//20//(int)(log(1500)/log(2))
 #define Epslion 1e-8
 #define LINAERITY 0.8
 #define USEPLR 0//now means not use plr's model to rebuild segment 
-#define Gm 16
+#define Gm 4
 #define MAX_DEPTH 6
 #define INIT_DEPTH 6//3
 #define INSERT_ROUTE 0
@@ -401,8 +402,15 @@ class skiplist {
             K Key;//the lower bound
             bool isIndex; //read only, true-> index node, false -> sgement node
             std::atomic<SNode*> next_; // next 指针用于构建链表，直接继承 
-            SNode(K base,bool type):Key(base),isIndex(type){}  
+            SNode(K base,bool type):Key(base),isIndex(type),next_(nullptr){}  
         };
+        struct inode{
+            K key;
+            SNode *address;
+        };      
+        static bool cmp(inode a,inode b){
+            return a.key <= b.key;
+        }
         struct subtree;
         struct Item{
             union {
@@ -1163,28 +1171,53 @@ class skiplist {
             }
 
             K bound;//right guard,the upper bound
-            int level;
+            // int level;
             subtree *DataArray;
             Semaphore delta_inserts;//concurrency control
             int SegmentMaxSize;
             std::atomic<bool> lock_pool;
             std::stack<subtree*> tree_pool;
             
-            Segment_pt(K base,K bnd,int lvl,int deta_insert_init = INIT_DEPTH):SNode(base,false),bound(bnd),level(lvl),
+            Segment_pt(K base,K bnd,int deta_insert_init = INIT_DEPTH):SNode(base,false),bound(bnd),
             delta_inserts(Semaphore(deta_insert_init)),lock_pool(false){}
         };
         struct Index: SNode{
+            std::allocator<inode> inodes_allocator;
+            inode* new_inodes(int n){
+                inode* x = inodes_allocator.allocate(n);
+                if(x!=nullptr){
+                    return x;
+                }
+                std::cout<<"allocate failed"<<std::endl;
+                return nullptr;
+            }
+            void delete_inodes(inode* x, int n){
+                inodes_allocator.deallocate(x, n);
+            }
+
+            inline void InitiArray(Index *root,K key,SNode *value){
+                root->iArray = new_inodes(1);
+                root->iArray[0] = {key,value};
+                root->size = 1;
+            }
+
+            inline void InitiArray(Index *root,K *keys_array,SNode **values_array,const int n_size){
+                root->iArray = new_inodes(n_size);
+                for(int i = 0;i<n_size;i++){
+                    root->iArray[i] = {keys_array[i],values_array[i]};
+                }
+                root->size = n_size;
+            }
             //get downward_
             SNode* Down() {
-                // Use an 'acquire load' so that we observe a fully initialized
-                // version of the returned Node.
-                return (downward_.load(std::memory_order_acquire));
+                RT_ASSERT(iArray);
+                return iArray[0].address;
             }
 
             //set downward_
-            void SetDown(SNode* x) {
-                downward_.store(x, std::memory_order_release);
-            }
+            // void SetDown(SNode* x) {
+            //     downward_.store(x, std::memory_order_release);
+            // }
 
             inline void AppendNext(SNode* next_left,SNode* next_right){
                 while (true){
@@ -1198,12 +1231,298 @@ class skiplist {
             }
 
             // 这里node 有可能是index，也有可能是segment，统一这样处理了
-            inline void AppendBelow(SNode* below) {
-                this->SetDown(below);
+            // inline void AppendBelow(SNode* below) {
+            //     this->SetDown(below);
+            // }
+
+            // inline bool CASBufferLock(bool free = false,bool block=true){
+            //     return lock_buffer.compare_exchange_strong(free, block);
+            // }
+            
+            // inline void ReleaseBufferLock(){
+            //     lock_buffer.store(false, std::memory_order_release);
+            // }
+
+            inline int predict(K key,int size){
+                M v = (slope) * (static_cast<long double>(key)) + (intercept);
+                if(v > std::numeric_limits<int>::max() / 2) {
+                    return size - 1;
+                }
+                if(v < 0 || static_cast<int>(v)<0){
+                    return 0;
+                }
+                return std::min(size - 1, static_cast<int>(v));
             }
 
-            std::atomic<SNode*> downward_; // 下一层SNode,可能是Index, Segment_pt
-            Index(K base):SNode(base,true){}
+            bool Find(K key){
+                std::shared_lock lock(mutex_);
+                if(!iArray)
+                    return false;
+                if(buffer){
+                    for(auto it:*buffer){
+                        if(it.key == key){
+                            return true;
+                        }
+                    }
+                } 
+                int pos = predict(key,size);
+                if(iArray[pos].key == key){
+                    return true;
+                }
+                int l = (pos-Gm + size)%size, r = (pos+Gm)%size;
+                while (l <= r)
+                {
+                    int mid = l + ((r-l)>>1);
+                    if(iArray[mid].key == key){
+                        return true;
+                    }else if(iArray[mid].key > key){
+                        r = mid -1;
+                    }else{
+                        l = mid+1;
+                    }
+                }
+                return false;
+
+            }
+
+            SNode* FindPrecursor(K key){
+                std::shared_lock lock(mutex_);
+                RT_ASSERT(iArray);
+                if(!iArray)
+                    return nullptr;
+                int pos = predict(key,size);
+                if(iArray[pos].key == key){
+                    RT_ASSERT(iArray[pos].address);
+                    return iArray[pos].address;
+                }
+                //buffer中的不去读
+                int l = max(0,pos - 2*Gm), r = min(size-1,pos + 2*Gm);
+                SNode *res = nullptr;
+                while (l <= r)
+                {
+                    int mid = l + (r-l)/2;
+                    if(iArray[mid].key == key){
+                        return iArray[mid].address;
+                    }
+                    else if(key < iArray[mid].key){
+                        r = mid-1;
+                    }else{
+                        res = iArray[mid].address;
+                        l = mid + 1;
+                    }
+                }
+                return res;
+            }
+
+            inline Index* FindParent(K key,SNode* pre,int level){
+                SNode *next_ = pre->Next();
+                while(next_ && key >= next_->Key){
+                    pre = next_;
+                    next_ = pre->Next();
+                }
+                return reinterpret_cast<Index*>(pre);
+            }
+
+            //假定new_index_node 的父节点就是本index node，那么Keys和new_index_node中的第一个元素不需要参与插入
+            void Insert(std::vector<K> &Keys,std::vector<SNode*> &new_index_node,SNode* preds[],int level,skiplist *list){
+                std::unique_lock lock(mutex_);
+                std::cout<<"insert new split node"<<std::endl;
+                // while(!CASBufferLock()){;}
+                int b_size = buffer->size(),n_size = new_index_node.size()-1;
+                if(b_size + n_size < 10){
+                    for(int i = 1;i<n_size;i++){
+                        buffer->push_back({Keys[i],new_index_node[i]});
+                    }
+                    return;
+                }else{
+                    const int new_size = b_size + size + n_size - 1;
+                    K *keys_array = new K[new_size];
+                    SNode* values_array[new_size];
+                    inode *old_array = iArray;
+                    const int old_size = size;
+                    MergeArray(keys_array,values_array,Keys,new_index_node,b_size,n_size);
+                    //using greedy plr split
+                    std::vector<Index*> group;
+                    int split_cnt = SplitArray(keys_array,values_array,new_size,group);//change this->iArray,this->size,this->buffer,this->model
+                    delete_inodes(old_array,old_size);
+                    //insert into the upper layer index node
+                    if(split_cnt > 1 && level < SkiplistMaxLevel){
+                        K key_inode = reinterpret_cast<SNode*>(this)->Key;
+                        Index *pre_inode = FindParent(key_inode,preds[level+1],level);//得到该层的最大前驱(snode.Key<=key_inode)
+                        Index *parent_inode = pre_inode;
+                        std::vector<K> split_inode_keys;
+                        std::vector<SNode*> split_inodes_;
+                        for(int i = 0;i<split_cnt;i++){
+                            split_inode_keys.push_back(reinterpret_cast<SNode*>(group[i])->Key);
+                            split_inodes_.push_back(reinterpret_cast<SNode*>(group[i]));
+                        }
+                        if(!pre_inode->Find(key_inode)){//若最大前驱inode中无key_inode节点，则认为无父节点，需要手动创建
+                            //create a new index
+                            parent_inode =  new Index(key_inode,this);
+                            pre_inode->AppendNext(parent_inode,parent_inode);
+                            list->UpdateHeight(level+1);
+                        }
+                        lock.unlock();
+                        parent_inode->Insert(split_inode_keys,split_inodes_,preds,level+1,list);
+                    }
+                    delete []keys_array;
+                    return;
+                }
+                // ReleaseBufferLock();
+            }
+
+            void Merge(std::vector<inode> &middle_array,int b_size){
+                int p1 = 0,p2 = 0,p_ = 0;
+                while (p1 < size && p2 < b_size){
+                    if(iArray[p1].key <= buffer->at(p2).key){
+                        middle_array[p_] = {iArray[p1].key,iArray[p1].address};
+                        p1++;
+                    }else{
+                        middle_array[p_] = {buffer->at(p2).key,buffer->at(p2).address};
+                        p2++;
+                    }
+                    p_++;
+                }
+
+                while(p1 < size){
+                    middle_array[p_] = {iArray[p1].key,iArray[p1].address};
+                    p1++;
+                    p_++;
+                }
+
+                while(p2 < b_size){
+                    middle_array[p_] = {buffer->at(p2).key,buffer->at(p2).address};
+                    p2++;
+                    p_++;
+                }
+                return;
+            }
+
+            int SplitArray(K *keys_array,SNode **values_array,const int n_size,std::vector<Index*> &group){
+                GreedyPLR* plr = new GreedyPLR(Gm);
+                vector<Segment*> seg;
+                vector<int> segment_stIndex;
+                int st = 0,ed = 0;
+                for (int i = 0; i < n_size; i++) {
+                    Segment* seg_res = nullptr;
+                    seg_res = plr->Process(static_cast<M>(keys_array[i]), static_cast<M>(i-st));       
+                    if(seg_res) {
+                        segment_stIndex.push_back(st);
+                        seg.push_back(seg_res);
+                        st = ed = i;
+                    }
+                    else{
+                        ed = i;
+                    }
+                }
+                Segment* seg_res = nullptr;
+                seg_res = plr->finish();
+                if (seg_res) {
+                    segment_stIndex.push_back(st);
+                    seg.push_back(seg_res);
+                }
+
+                //create new index node
+                int new_index_cnt = seg.size();
+                RT_ASSERT(segment_stIndex.size() == new_index_cnt);
+                if(new_index_cnt == 1){
+                    delete plr;
+                    InitiArray(this,keys_array,values_array,n_size);
+                    slope = seg[0]->slope,intercept = seg[0]->intercept;
+                    buffer->clear();
+                    return 1;
+                }
+                group.resize(new_index_cnt);
+                group[0] = this;
+                for(int i = 1;i<new_index_cnt;i++){
+                    group[i] = new Index(keys_array[segment_stIndex[i]]);
+                    K *keys_array_ = keys_array + segment_stIndex[i];
+                    SNode **values_array_ = values_array + segment_stIndex[i];
+                    int i_size;
+                    if(i == new_index_cnt -1 ){
+                        i_size = n_size - segment_stIndex[i];
+                    }else{
+                        i_size = segment_stIndex[i+1] - segment_stIndex[i];
+                    }
+                    InitiArray(group[i],keys_array_,values_array_,i_size);
+                    group[i]->slope = seg[i]->slope,group[i]->intercept = seg[i]->intercept;
+                    group[i]->buffer = new std::vector<inode>();
+                    //link 1...new_index_cnt-1 at current layer
+                    if(i>1)
+                        reinterpret_cast<SNode*>(group[i-1])->SetNext(reinterpret_cast<SNode*>(group[i]));
+                }
+                this->AppendNext(group[1],group[new_index_cnt-1]);
+                InitiArray(this,keys_array,values_array,segment_stIndex[1]);
+                slope = seg[0]->slope,intercept = seg[0]->intercept;
+                buffer->clear(); 
+                delete plr;      
+                return new_index_cnt;     
+            }
+
+            void MergeArray(K *keys_array,SNode **values_array,std::vector<K> &Keys,std::vector<SNode*> &new_index_node,
+                int b_size,int n_size,bool including_first = false){
+                sort(buffer->begin(),buffer->end(),cmp);
+                std::vector<inode> middle_array(b_size + size);
+                Merge(middle_array,b_size);
+                int p1 = 0,p2 = 0,p_ = 0;
+                if(!including_first){
+                    p2 = 1;
+                }
+                int merge_size = b_size + size;
+                while (p1 < merge_size && p2 < n_size){
+                    if(middle_array[p1].key <= Keys[p2]){
+                        keys_array[p_] = middle_array[p1].key;
+                        values_array[p_] = middle_array[p1].address;
+                        p1++;
+                    }else{
+                        keys_array[p_] = Keys[p2];
+                        values_array[p_] = new_index_node[p2];
+                        p2++;
+                    }
+                    p_++;
+                }
+
+                while(p1 < merge_size){
+                    keys_array[p_] = middle_array[p1].key;
+                    values_array[p_] = middle_array[p1].address;
+                    p1++;
+                    p_++;
+                }
+
+                while(p2 < n_size){
+                    keys_array[p_] = Keys[p2];
+                    values_array[p_] = new_index_node[p2];
+                    p2++;
+                    p_++;
+                }
+
+            }
+
+            void Show(){
+                //start key
+                cout<<"size:\t"<<size<<std::endl;
+                cout<<iArray[0].key;
+                //键对数量，键对打出来
+                for(int i = 1;i<size;i++){
+                    cout<<","<<iArray[i].key;
+                }
+                cout<<endl;
+            }
+
+            // std::atomic<SNode*> downward_; // 下一层SNode,可能是Index, Segment_pt,downward_(nullptr),
+            // std::atomic<int> size;
+            int size;
+            M slope = 0,intercept = 0;
+            inode *iArray;//compacted no gap
+            std::shared_mutex mutex_;//readers use shared_lock while writers use unique_lock 
+            // std::atomic<bool> lock_buffer; //lock_buffer(false),
+            std::vector<inode> *buffer;
+            Index(K base,SNode *init_add = nullptr):SNode(base,true),size(0),slope(0),intercept(0),iArray(nullptr),buffer(nullptr){
+                if(init_add){
+                    InitiArray(this,base,init_add);
+                    buffer = new std::vector<inode>();
+                }
+            }
         };      
         class Semaphore {
         public:
@@ -1273,23 +1592,21 @@ class skiplist {
             int work_cnt;//Records the current number of threads that are working
             // int depth_cap;
         };
+                
         //--------------------------new segment_pt--------------------------//
 
-        SNode* NewSegment_pt(K base,K bound,int level,subtree* n){
+        SNode* NewSegment_pt(K base,K bound,subtree* n){
             //data array = n,if no data,n = nullptr
             if(!n)
-                return NewSegment_pt(base,bound,level,false);
+                return NewSegment_pt(base,bound,false);
             SNode *newseg = nullptr;
             // int slots = (n->num_items);
             int ele_size = n->size.load(std::memory_order_relaxed);
             if(ele_size < 2){
-                newseg = new Segment_pt(base,bound,level);
+                newseg = new Segment_pt(base,bound);
             }
             else{
-                if(ele_size <= 5e4)//TODO initdepth
-                    newseg = new Segment_pt(base,bound,level,INIT_DEPTH);
-                else
-                    newseg = new Segment_pt(base,bound,level,MAX_DEPTH);
+                newseg = new Segment_pt(base,bound,MAX_DEPTH);
             }
             reinterpret_cast<Segment_pt*>(newseg)->DataArray = n;
             reinterpret_cast<Segment_pt*>(newseg)->CreateMemPool();
@@ -1298,9 +1615,9 @@ class skiplist {
             return newseg;
         }
         
-        SNode* NewSegment_pt(K base,K bound,int level,bool ht){
+        SNode* NewSegment_pt(K base,K bound,bool ht){
             //ht:is head node or tail node
-            SNode *newseg = new Segment_pt(base,bound,level,INIT_DEPTH);
+            SNode *newseg = new Segment_pt(base,bound,INIT_DEPTH);
             reinterpret_cast<Segment_pt*>(newseg)->CreateMemPool();
             //data array = build_tree_none
             if(ht)
@@ -1314,43 +1631,19 @@ class skiplist {
         
 
         //--------------------------new index--------------------------//
-        
-        //return the top index,SnodeArray[0] is segment layer,1-level are index layer
-        SNode* NewIndexArray(int level,K base,K bound,bool ht,vector<SNode*> &SnodeArray){
-            SNode* pr_ = NewSegment_pt(base,bound,level,ht);
+        //create the multi layer of head/tail 
+        SNode* NewIndexBoundArray(int level,K base,K bound,vector<SNode*> &SnodeArray){
+            SNode* pr_ = NewSegment_pt(base,bound,true);//bottom segment
             SnodeArray[0] = pr_;
             for(int l = 1;l<=level;l++){
-                SNode* curr = new Index(base);
-                reinterpret_cast<Index*>(curr)->SetNext(nullptr);//no need to loop
-                reinterpret_cast<Index*>(curr)->AppendBelow(pr_);
+                Index *inode_n = new Index(base,pr_);
+                // inode_n->InitiArray(inode_n,base,pr_);
+                SNode* curr = reinterpret_cast<SNode*>(inode_n);
+                curr->SetNext(nullptr);//TODO to delete
+                pr_ = curr;
                 SnodeArray[l] = curr;
-                pr_ = curr;
             }
-            return pr_;
-        }
-
-        SNode* NewIndexArrayWithData(int level,K base,K bound,subtree* n,vector<SNode*> &SnodeArray){
-            SNode* pr_ = NewSegment_pt(base,bound,level,n);
-            SnodeArray[0] = pr_;
-            for(int l = 1;l<=level;l++){
-                SNode* curr = new Index(base);
-                reinterpret_cast<Index*>(curr)->SetNext(nullptr);
-                reinterpret_cast<Index*>(curr)->AppendBelow(pr_);
-                SnodeArray[l] = curr;
-                pr_ = curr;
-            }
-            return pr_;
-        }
-
-        SNode* NewIndex(int level,K base,K bound){
-            SNode* pr_ = NewSegment_pt(base,bound,level,true);
-            for(int l = 0;l<level;l++){
-                SNode* curr = new Index(base);
-                reinterpret_cast<Index*>(curr)->SetNext(nullptr);
-                reinterpret_cast<Index*>(curr)->AppendBelow(pr_);
-                pr_ = curr;
-            }
-            return pr_;
+            return pr_;//top index node
         }
         
         //--------------------------skiplist operation--------------------------//
@@ -1372,7 +1665,62 @@ class skiplist {
             return lvl;
         }
 
+        inline void UpdateHeight(int new_height){
+            int old_max_height = GetMaxHeight();
+            while (new_height > old_max_height) {
+                if (max_height_.compare_exchange_weak(old_max_height, new_height)) {
+                    // successfully updated it
+                    break;
+                }
+            }
+        }
+
         //for Lookup
+        //TODO
+        SNode* Scan(K key,SNode* preds[]){
+            SNode* pred = head_;
+            SNode* curr = nullptr;
+            SNode* succ = nullptr;
+            SNode* locate = nullptr;
+            int top_level = GetMaxHeight();//Get the highest INDEX height at this time
+            //down
+            //get predecessor at [MaxLevel,top_level) layer 
+            for(int l = MaxLevel;l>top_level;l--){
+                preds[l] = pred;
+                pred = reinterpret_cast<Index*>(pred)->Down();
+            }
+
+            //get the preds from [top_level,0)
+            for(int l = top_level;l>=0;l--){
+                //not sure key > curr's key
+                curr = reinterpret_cast<Index*>(pred)->Next();
+                #if DEBUG_ASSERT
+                RT_ASSERT(curr!=nullptr);
+                #endif
+                succ = reinterpret_cast<Index*>(curr)->Next();
+                while(succ && succ->Key <= key){//pred proceeds on, only when the left bound of succ is not greater than key
+                    pred = curr;
+                    curr = succ;
+                    succ = reinterpret_cast<Index*>(succ)->Next();
+                }
+                //case1 pred <= key < curr ;
+                //case2 pred < curr <= key < succ
+                if(key >= curr->Key){
+                    //key is bwtween curr and succ,case 2
+                    pred = curr;//curr != tail_
+                }
+                preds[l] = pred;
+                RT_ASSERT(preds[l]->Key >= preds[l+1]->Key);
+                if(l)
+                    pred = reinterpret_cast<Index*>(pred)->FindPrecursor(key);
+                RT_ASSERT(pred);
+            }
+            //return segment_pt
+            locate = pred;
+            RT_ASSERT(reinterpret_cast<Segment_pt*>(locate)->bound > key);
+            return locate;
+        }
+
         SNode* Scan(K key){
             SNode* pred = head_;
             SNode* curr = nullptr;
@@ -1384,7 +1732,7 @@ class skiplist {
                 pred = reinterpret_cast<Index*>(pred)->Down();
             }
             //get the preds from [top_level,0)
-            for(int l = top_level;l>0;l--){
+            for(int l = top_level;l>=0;l--){
                 //not sure key > curr's key
                 curr = reinterpret_cast<Index*>(pred)->Next();
                 #if DEBUG_ASSERT
@@ -1399,63 +1747,12 @@ class skiplist {
                 if(key >= curr->Key){
                     //key is bwtween curr and succ
                     pred = curr;
-                    if(key < reinterpret_cast<Segment_pt*>(pred)->bound ){
-                        for(;l>0;l--){
-                            pred = reinterpret_cast<Index*>(pred)->Down();
-                        }
-                        break;
-                    }
                 }
-                pred = reinterpret_cast<Index*>(pred)->Down();
+                if(l)
+                    pred = reinterpret_cast<Index*>(pred)->FindPrecursor(key);
             }
             //return segment_pt
             locate = pred;//reinterpret_cast<Seg*>(pred)->Down();
-            return locate;
-        }
-
-        //for Add,preds[0,MaxLevel]
-        SNode* Scan(K key, SNode* preds[]){
-            SNode* pred = head_;
-            SNode* curr = nullptr;
-            SNode* succ = nullptr;
-            SNode* locate = nullptr;
-            int top_level = GetMaxHeight();//Get the highest INDEX height at this time
-            //down
-            //get predecessor at [MaxLevel,top_level) layer 
-            for(int l = MaxLevel;l>top_level;l--){
-                preds[l] = pred;
-                pred = reinterpret_cast<Index*>(pred)->Down();
-            }
-
-            //get the preds from [top_level,0)
-            for(int l = top_level;l>0;l--){
-                //not sure key > curr's key
-                #if DEBUG_ASSERT
-                RT_ASSERT(pred->isIndex);
-                #endif
-                curr = reinterpret_cast<Index*>(pred)->Next();
-                #if DEBUG_ASSERT
-                RT_ASSERT(curr!=nullptr);
-                #endif
-                succ = reinterpret_cast<Index*>(curr)->Next();
-                while(succ && succ->Key <= key){//pred proceeds on, only when the left bound of succ is not greater than key
-                    pred = curr;
-                    curr = succ;
-                    succ = reinterpret_cast<Index*>(succ)->Next();
-                }
-                
-                //case1 pred <= key < curr ;
-                //case2 pred < curr <= key < succ
-                if(key >= curr->Key){
-                    //key is bwtween curr and succ,case 2
-                    pred = curr;//curr != tail_
-                }
-                preds[l] = pred;
-                pred = reinterpret_cast<Index*>(pred)->Down();//pred will be updated as bottom segment node when l = 1
-            }
-            //return segment_pt
-            locate = pred;
-            preds[0] = locate;
             return locate;
         }
 
@@ -1570,32 +1867,6 @@ class skiplist {
         }
 
         //rebuild or split segment
-        int RebuildSegmentWithLinearity(SNode** preds,Segment_pt* locate,int &split_cnt){
-            subtree *n = locate->DataArray;
-            const int ESIZE = n->size.load(std::memory_order_acquire);
-            K n_start = reinterpret_cast<SNode*>(locate)->Key,n_stop = locate->bound;
-            K* keys = new K[ESIZE];
-            V* values = new V[ESIZE];
-            long double pccs_n = locate->ScanAndDestroySubtreeWithPCCs(n,keys,values,ESIZE);
-            locate->DataArray = nullptr;
-            //new_segment_max_size
-            if(pccs_n < linearity || ESIZE>SEGMENT_MAX_SIZE){//split
-                SplitSegment(locate,preds,keys,values,ESIZE,n_start,n_stop);//SplitSegment already released the write lock of locate
-                int new_size = locate->DataArray->size.load(std::memory_order_acquire);
-                delete[] keys;
-                delete[] values;
-                split_cnt++;
-                return new_size;
-            }else{
-                std::pair<subtree*,int> res_ = locate->rebuild_tree(keys,values,ESIZE);
-                locate->DataArray = res_.first;
-                delete[] keys;
-                delete[] values;
-                return ESIZE;
-            }
-        }
-
-        //rebuild or split segment
         int RebuildSegment(SNode** preds,Segment_pt* locate,int &split_cnt){
             subtree *n = locate->DataArray;
             const int ESIZE = n->size.load(std::memory_order_acquire);
@@ -1606,13 +1877,38 @@ class skiplist {
                 V* values = new V[ESIZE];
                 locate->scan_and_destroy_subtree(n,keys,values,ESIZE);
                 locate->DataArray = nullptr;
-                SplitSegment(locate,preds,keys,values,ESIZE,n_start,n_stop);//SplitSegment already released the write lock of locate
-                // int new_slot = locate->DataArray->num_items;
+                std::vector<SNode*> split_nodes;
+                std::vector<K> inode_keys;
+                std::cout<<"split "<<ESIZE<<std::endl;
+                SplitSegment(locate,keys,values,ESIZE,n_start,n_stop,split_nodes,inode_keys);
                 int new_size = locate->DataArray->size.load(std::memory_order_acquire);
-                // new_segment_max_size = locate->SegmentMaxSize;
                 delete[] keys;
                 delete[] values;
                 split_cnt++;
+                
+                // if(n_stop == KeyMax && n_start == 1){
+                //     int split_cnt = split_nodes.size();
+                //     SNode *left = nullptr,*right = nullptr;
+                //     for(int i = 0;i<split_cnt;i++){
+                //         Index *inode_n = new Index(inode_keys[i],split_nodes[i]);
+                //         if(i){
+                //             right->SetNext(inode_n);
+                //         }else{
+                //             left = inode_n;
+                //         }
+                //         right = inode_n;
+                //     }
+                //     reinterpret_cast<Index*>(preds[1])->AppendNext(left,right);
+                //     return new_size;
+                // }
+                Index *pre_inode = reinterpret_cast<Index*>(preds[1])->FindParent(n_start,preds[1],1);
+                Index *parent_inode = pre_inode;
+                if(!pre_inode->Find(n_start)){
+                    //create a new index
+                    parent_inode =  new Index(n_start,split_nodes[0]);
+                    pre_inode->AppendNext(parent_inode,parent_inode);
+                }
+                parent_inode->Insert(inode_keys,split_nodes,preds,1,this);
                 return new_size;
             }else{
                 K *keys = new K[ESIZE];
@@ -1631,7 +1927,123 @@ class skiplist {
             }
         }
 
-        bool SplitSegment(Segment_pt *root,SNode** preds,K *_keys,V *_values,int _size,K _start,K _stop){
+        int SplitSegment(Segment_pt *root,K *_keys,V *_values,int _size,K _start,K _stop,
+            std::vector<SNode*> &split_nodes,std::vector<K> &inode_keys){
+            //1. partition array
+            int st = 0,ed =0;//the rank of the first/last+1 element of one segment
+            GreedyPLR* plr = new GreedyPLR(gamma);
+            vector<Segment*> seg;
+            vector<int> segment_stIndex;
+            for (int i = 0; i < _size; i++) {
+                Segment* seg_res = nullptr;
+                #if PLR_DATA_PREPROCESS
+                seg_res = plr->Process(static_cast<M>(_keys[i]) - static_cast<M>(_keys[st]), static_cast<M>(i-st));
+                #else
+                // if(_stop - _start > 0x7fffffff)//TODO:需要随着key类型及数据范围调整
+                    seg_res = plr->Process(static_cast<M>(_keys[i]), static_cast<M>(i-st));
+                // else
+                    // seg_res = plr->Process(static_cast<M>(_keys[i]) - static_cast<M>(_keys[st]), static_cast<M>(i-st));
+                #endif
+                                
+                if(seg_res) {
+                    segment_stIndex.push_back(st);
+                    seg.push_back(seg_res);
+                    st = ed = i;
+                }
+                else{
+                    ed = i;
+                }
+            }
+        
+            Segment* seg_res = nullptr;
+            seg_res = plr->finish();
+            if (seg_res) {
+                segment_stIndex.push_back(st);
+                seg.push_back(seg_res);
+            }
+            
+            //2. generate segments group
+            int seg_size = static_cast<int>(seg.size());
+            split_nodes.resize(seg_size);
+            inode_keys.resize(seg_size);
+
+            //create new segment
+            split_nodes[0] = root;
+            subtree *root_dataarray = nullptr;
+            K split_lower_bound = 0;//the right bound of the first segment node after split
+            for(int i = 0;i<seg_size;i++){
+                int ed,st=segment_stIndex[i];
+                K base,bound;
+                //2.1 set base
+                base = i==0?_start:_keys[st];
+                inode_keys[i] = base;
+                //2.2 set bound,ed
+                if(i == seg_size-1){
+                    bound = _stop;
+                    ed = _size;
+                }else{
+                    ed = segment_stIndex[i+1];
+                    bound = _keys[ed];
+                }
+                #if DEBUG_ASSERT
+                RT_ASSERT(ed-st>0);
+                #endif
+                //2.3 rebuild subtree
+                subtree* new_subtree = nullptr;
+                if(ed-st == 1){
+                    new_subtree = root->build_tree_none(base,bound);
+                    BITMAP_CLEAR(new_subtree->none_bitmap,0);
+                    new_subtree->size.store(1, std::memory_order_release);
+                    new_subtree->items[0].comp.data.key = _keys[st];
+                    new_subtree->items[0].comp.data.value = _values[st];
+                }
+                else{
+                    std::pair<subtree*,int> res_;
+                    #if USEPLR
+                        if(seg[i]->slope > 0)
+                            res_ = root->rebuild_tree(_keys+st,_values+st,ed-st,true,seg[i]->slope,seg[i]->intercept);
+                        else
+                            res_ = root->rebuild_tree(_keys+st,_values+st,ed-st);
+                    #else
+                        res_ = root->rebuild_tree(_keys+st,_values+st,ed-st);
+                    #endif
+                    new_subtree = res_.first;
+                }
+
+                //2.4 create segment 
+                if(i){
+                    //2.4.1 create index array(stored in SNodeArray) with subtree
+                    SNode* next_seg = NewSegment_pt(base,bound,new_subtree);
+                    split_nodes[i] = next_seg;
+                    if(i>1){
+                        split_nodes[i-1]->SetNext(next_seg);
+                    }
+                }else{
+                    root_dataarray = new_subtree;
+                    split_lower_bound = bound;
+                }
+                  
+            }
+
+            if(seg_size == 1){
+                root->DataArray = root_dataarray;
+                delete plr;
+                return 1;
+            }else{
+                //2.6 link the bottom(segment_pt)
+                split_nodes[seg_size-1]->SetNext(root->Next());
+                root->SetNext(split_nodes[1]);
+                //2.7 update root(segment_pt)
+                root->bound = split_lower_bound;
+                root->DataArray = root_dataarray;
+                //TODO not sure whether the new node can split 
+                //release the split locks of segment group 
+                delete plr;
+                return seg_size;
+            }
+        }
+
+        /*bool SplitSegmentRaw(Segment_pt *root,SNode** preds,K *_keys,V *_values,int _size,K _start,K _stop){
             //1. partition array
             int st = 0,ed =0;//the rank of the first/last+1 element of one segment
             GreedyPLR* plr = new GreedyPLR(gamma);
@@ -1820,6 +2232,25 @@ class skiplist {
             
             return true;
         }
+        */
+
+        void ShowIndexLayer(){
+            int cur_height = GetMaxHeight();
+            SNode *pr = head_;
+            for(int i = MaxLevel;i>cur_height;i--){
+                pr = reinterpret_cast<Index*>(pr)->Down();
+            }
+            SNode *cur = pr;
+            for(int i = cur_height;i>0;i--){
+                cout<<"layer "<<i<<":"<<std::endl;
+                SNode *n = cur;
+                while(n->Key != KeyMax){
+                    reinterpret_cast<Index*>(n)->Show();
+                    n = n->Next();
+                }
+                cur = reinterpret_cast<Index*>(cur)->Down();
+            }
+        }
 
         void ShowSegmentNumber(bool write_ = true){
             Segment_pt* head_seg = nullptr;
@@ -1905,36 +2336,22 @@ class skiplist {
         SNode* tail_;
         skiplist();
         skiplist(int MaxLevel,int gamma):max_height_(1),MaxLevel(MaxLevel),gamma(gamma),linearity(LINAERITY){
+            /*
+            头尾节点 各自有1-Maxlevel的index node，作指示作用
+            中间节点，一开始不设置index node，仅有data layer,插入只会发生在split后
+            */
             vector<SNode*> left_index(MaxLevel+1,nullptr);//store the all level SNode of head_
             vector<SNode*> right_index(MaxLevel+1,nullptr);//store the all level SNode of tail_
-            head_ = NewIndexArray(MaxLevel,0,0,true,left_index);
-            tail_ = NewIndexArray(MaxLevel,KeyMax,KeyMax,true,right_index);
+            head_ = NewIndexBoundArray(MaxLevel,0,0,left_index);
+            tail_ = NewIndexBoundArray(MaxLevel,KeyMax,KeyMax,right_index);
 
-            int level_idx1 = RandLevel();
-            vector<SNode*> middle_index(level_idx1+1,nullptr);//store the all level SNode of Idx1
-            // SNode* Idx1 = NewIndexArray(level_idx1,1,KeyMax,middle_index);
-            NewIndexArray(level_idx1,1,KeyMax,false,middle_index);
-
-            //update the height of skiplist
-            int max_height = 1;
-            while (level_idx1 > max_height) {
-                if (max_height_.compare_exchange_weak(max_height, level_idx1)) {
-                // successfully updated it
-                max_height = level_idx1;
-                break;
-                }
-            }
-
+            SNode *middle_node = NewSegment_pt(1,KeyMax,false);
             {//segment link
-                reinterpret_cast<Segment_pt*>(left_index[0])->SetNext(middle_index[0]);
-                reinterpret_cast<Segment_pt*>(middle_index[0])->SetNext(right_index[0]);
+                reinterpret_cast<Segment_pt*>(left_index[0])->SetNext(middle_node);
+                reinterpret_cast<Segment_pt*>(middle_node)->SetNext(right_index[0]);
             }
             {//index link
-                for(int i = 1;i<=level_idx1;i++){
-                    reinterpret_cast<Index*>(left_index[i])->SetNext(middle_index[i]);
-                    reinterpret_cast<Index*>(middle_index[i])->SetNext(right_index[i]);
-                }
-                for(int i = level_idx1+1;i<=MaxLevel;i++){
+                for(int i = 1;i<=MaxLevel;i++){
                     reinterpret_cast<Index*>(left_index[i])->SetNext(right_index[i]);
                 }
             }

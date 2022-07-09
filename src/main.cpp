@@ -3,9 +3,9 @@
 #include <thread>
 #include <set>
 
-#define PRFO 0
-#define PRFOINSERT 0
-#define PRFOQUERY 0
+#define PRFO 1
+#define PRFOINSERT 1
+#define PRFOQUERY 1
 
 #if PRFO
 #include<gperftools/profiler.h>
@@ -13,21 +13,21 @@
 
 #define MM 1000000
 #define NUMBERDATA (64*MM)
-#define SkiplistMaxLevel (int)(log(5882)/log(2))//20//(int)(log(1500)/log(2))
 #define THREAD_NUMBER 32
 #define NOFINDDEBUG 0
 #define QUERY_TEST 1
 #define WriteRatio (1.0)
 #define FOLDKEY 0
-#define SPACEPRINT 1
+#define SPACEPRINT 0
+#define SegmentGamma 16
 
 int read_offset = NUMBERDATA * WriteRatio;
 int write_dis = (read_offset)/THREAD_NUMBER;
 int read_dis = (NUMBERDATA * (1 - WriteRatio)) / THREAD_NUMBER;
-char data_file[] = "/root/LSDataset/twitter/twitter64M01.txt";
+char data_file[] = "/root/LSDataset/ycsb/ycsb64M01.txt";
 
 KeyType *input_data = new KeyType[NUMBERDATA];
-skiplist<KeyType,VaueType,ModelType> *list = new skiplist<KeyType,VaueType,ModelType>(SkiplistMaxLevel,Gm);
+skiplist<KeyType,VaueType,ModelType> *list = new skiplist<KeyType,VaueType,ModelType>(SkiplistMaxLevel,SegmentGamma);
 
 long long partial_r[THREAD_NUMBER];
 long long MAX_DEPTH_array[THREAD_NUMBER];
@@ -87,17 +87,24 @@ void WorkloadTest(int id){
             continue;
         int cnt = 0;
         long long collision_cnt = 0;
+        if((i - bound_l) % MM == 0)
+            cout<<i<<std::endl;
         list->Add(input_data[i],i,route,cnt,SplitCnt,collision_cnt);
     }
     // std::cout<<"insert finish"<<std::endl;
     bound_l = read_offset + id*(read_dis);
     bound_r = read_offset + (id+1)*(read_dis);
+    int no_find = 0;
     for(int i = bound_l;i<bound_r;i++){
         if(input_data[i] == 0 || input_data[i] == KeyMax)
             continue;
         auto res = list->Lookup(input_data[i]);
+        if(!res.first){
+            no_find++;
+        }
     }
     free(route);
+    std::cout<<"no find:"<<no_find<<std::endl;
 }
 
 void WorkloadInserPart(int id){
@@ -210,6 +217,7 @@ int main(){
     n = 0;
     Query_Part(n);
     #endif
+    // list->ShowIndexLayer();
     #if SPACEPRINT
     string outs = std::to_string(list->SpaceSize())+"\n";
     write_into_file("./space_size.txt",outs.c_str());
