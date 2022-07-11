@@ -138,6 +138,40 @@ enum ItemState {
     Empty = 0, Element, Subtree
 };
 
+typedef struct RCUStatus {
+    std::atomic<uint64_t> status;
+    std::atomic<bool> waiting;
+}RCUStatus;
+
+//--------------------------rcu operation--------------------------//
+std::unique_ptr<RCUStatus[]> rcu_status;
+uint32_t worker_n;
+inline void rcu_init(uint32_t worker_n_){
+    worker_n = worker_n_;
+    rcu_status = std::make_unique<RCUStatus[]>(worker_n);
+    for (uint32_t worker_i = 0; worker_i < worker_n; worker_i++) {
+        rcu_status[worker_i].status = 0;
+        rcu_status[worker_i].waiting = false;
+    }
+}
+
+inline void rcu_progress(const uint32_t worker_id) {
+    // rcu_status[worker_id].status++;
+    rcu_status[worker_id].status++;
+}
+
+void rcu_barrier(const uint32_t worker_id){
+    uint64_t prev_status[worker_n];
+    for (uint32_t w_i = 0; w_i < worker_n; w_i++) {
+        prev_status[w_i] = rcu_status[w_i].status;
+    }
+    for (uint32_t w_i = 0; w_i < worker_n; w_i++) {
+        if(worker_id != w_i){
+            while (rcu_status[w_i].status <= prev_status[w_i]){;}
+        }
+    }
+}
+
 template<class K, class V,class M>
 class skiplist {
     public:
@@ -356,7 +390,7 @@ class skiplist {
                     return;
                 }
                 // Wait for lock to be released without generating cache misses
-                while (lock_.load(std::memory_order_relaxed)) {
+                while (lock_.load(std::memory_order_acquire)) {
                     // Issue X86 PAUSE or ARM YIELD instruction to reduce contention between
                     // hyper-threads
                     __builtin_ia32_pause();
@@ -367,7 +401,7 @@ class skiplist {
             bool try_lock() noexcept {
                 // First do a relaxed load to check if lock is free in order to prevent
                 // unnecessary cache misses if someone does while(!try_lock())
-                return !lock_.load(std::memory_order_relaxed) &&
+                return !lock_.load(std::memory_order_acquire) &&
                     !lock_.exchange(true, std::memory_order_acquire);
             }
 
@@ -411,6 +445,51 @@ class skiplist {
         static bool cmp(inode a,inode b){
             return a.key <= b.key;
         }
+        struct inodeArray{
+            std::allocator<inode> inodes_allocator;
+            inode* new_inodes(int n){
+                inode* x = inodes_allocator.allocate(n);
+                if(x!=nullptr){
+                    return x;
+                }
+                std::cout<<"allocate failed"<<std::endl;
+                return nullptr;
+            }
+            void delete_inodes(inode* x, int n){
+                inodes_allocator.deallocate(x, n);
+            }
+
+            inline int predict(K key){
+                M v = (slope) * (static_cast<long double>(key)) + (intercept);
+                if(v > std::numeric_limits<int>::max() / 2) {
+                    return size - 1;
+                }
+                if(v < 0 || static_cast<int>(v)<0){
+                    return 0;
+                }
+                return std::min(size - 1, static_cast<int>(v));
+            }
+
+            M slope = 0,intercept = 0;
+            int size;
+            inode* iArray;
+            inodeArray(int size_, M slope_,M intercept_,inode *iArray_) :slope(slope_), intercept(intercept_),size(size_), iArray(iArray_){}
+            inodeArray(int size_, M slope_,M intercept_):slope(slope_), intercept(intercept_),size(size_){
+                iArray = nullptr;
+                iArray = new_inodes(size_);
+            }
+            inodeArray(M slope_,M intercept_,K key,SNode *value):slope(slope_), intercept(intercept_),size(1){
+                iArray = nullptr;
+                iArray = new_inodes(1);
+                iArray[0] = {key,value};
+            }
+            ~inodeArray(){
+                if(iArray){
+                    delete_inodes(iArray,size);
+                    iArray = nullptr;
+                }
+            }
+        };
         struct subtree;
         struct Item{
             union {
@@ -1182,42 +1261,28 @@ class skiplist {
             delta_inserts(Semaphore(deta_insert_init)),lock_pool(false){}
         };
         struct Index: SNode{
-            std::allocator<inode> inodes_allocator;
-            inode* new_inodes(int n){
-                inode* x = inodes_allocator.allocate(n);
-                if(x!=nullptr){
-                    return x;
-                }
-                std::cout<<"allocate failed"<<std::endl;
-                return nullptr;
-            }
-            void delete_inodes(inode* x, int n){
-                inodes_allocator.deallocate(x, n);
-            }
-
-            inline void InitiArray(Index *root,K key,SNode *value){
-                root->iArray = new_inodes(1);
-                root->iArray[0] = {key,value};
-                root->size = 1;
-            }
-
-            inline void InitiArray(Index *root,K *keys_array,SNode **values_array,const int n_size){
-                root->iArray = new_inodes(n_size);
+            inline void InitIArray(Index *root,K *keys_array,SNode **values_array,const int n_size,M slope_,M intercept_){
+                root->SetDown(values_array[0]);
+                
+                inodeArray *iarray_ = new inodeArray(n_size,slope_,intercept_);
+                inode *ary = iarray_->iArray;
                 for(int i = 0;i<n_size;i++){
-                    root->iArray[i] = {keys_array[i],values_array[i]};
+                    ary[i] = {keys_array[i],values_array[i]};
                 }
-                root->size = n_size;
+                root->IArray.store((void*)iarray_,std::memory_order_release);
             }
+            
             //get downward_
             SNode* Down() {
-                RT_ASSERT(iArray);
-                return iArray[0].address;
+                return (downward_.load(std::memory_order_acquire));
+                // RT_ASSERT(IArray);
+                // return IArray[0].address;
             }
 
             //set downward_
-            // void SetDown(SNode* x) {
-            //     downward_.store(x, std::memory_order_release);
-            // }
+            void SetDown(SNode* x) {
+                downward_.store(x, std::memory_order_release);
+            }
 
             inline void AppendNext(SNode* next_left,SNode* next_right){
                 while (true){
@@ -1235,47 +1300,42 @@ class skiplist {
             //     this->SetDown(below);
             // }
 
-            // inline bool CASBufferLock(bool free = false,bool block=true){
-            //     return lock_buffer.compare_exchange_strong(free, block);
-            // }
+            inline bool CASBufferLock(bool free = false,bool block=true){
+                return lock_buffer.compare_exchange_strong(free, block);
+            }
             
-            // inline void ReleaseBufferLock(){
-            //     lock_buffer.store(false, std::memory_order_release);
-            // }
-
-            inline int predict(K key,int size){
-                M v = (slope) * (static_cast<long double>(key)) + (intercept);
-                if(v > std::numeric_limits<int>::max() / 2) {
-                    return size - 1;
-                }
-                if(v < 0 || static_cast<int>(v)<0){
-                    return 0;
-                }
-                return std::min(size - 1, static_cast<int>(v));
+            inline void ReleaseBufferLock(){
+                lock_buffer.store(false, std::memory_order_release);
             }
 
-            bool Find(K key){
-                std::shared_lock lock(mutex_);
-                if(!iArray)
+            bool Find(const uint32_t worker_id,K key){
+                rcu_progress(worker_id);
+                inodeArray *array_address  = (inodeArray *)(IArray.load(std::memory_order_acquire));
+                inode *ary = array_address->iArray;
+                int size = array_address->size;
+                if(!ary)
                     return false;
                 if(buffer){
+                    while(!CASBufferLock()){;}
                     for(auto it:*buffer){
                         if(it.key == key){
+                            ReleaseBufferLock();
                             return true;
                         }
                     }
+                    ReleaseBufferLock();
                 } 
-                int pos = predict(key,size);
-                if(iArray[pos].key == key){
+                int pos = array_address->predict(key);
+                if(ary[pos].key == key){
                     return true;
                 }
                 int l = (pos-Gm + size)%size, r = (pos+Gm)%size;
                 while (l <= r)
                 {
                     int mid = l + ((r-l)>>1);
-                    if(iArray[mid].key == key){
+                    if(ary[mid].key == key){
                         return true;
-                    }else if(iArray[mid].key > key){
+                    }else if(ary[mid].key > key){
                         r = mid -1;
                     }else{
                         l = mid+1;
@@ -1285,29 +1345,33 @@ class skiplist {
 
             }
 
-            SNode* FindPrecursor(K key){
-                std::shared_lock lock(mutex_);
-                RT_ASSERT(iArray);
-                if(!iArray)
+            SNode* FindPrecursor(const uint32_t worker_id, K key){
+                rcu_progress(worker_id);
+                inodeArray *array_address  = (inodeArray *)(IArray.load(std::memory_order_acquire));
+                inode *ary = array_address->iArray;
+                int size = array_address->size;
+                // RT_ASSERT(array_address);
+                if(!ary)
                     return nullptr;
-                int pos = predict(key,size);
-                if(iArray[pos].key == key){
-                    RT_ASSERT(iArray[pos].address);
-                    return iArray[pos].address;
+                int pos = array_address->predict(key);
+                if(ary[pos].key == key){
+                    RT_ASSERT(ary[pos].address);
+                    return ary[pos].address;
                 }
                 //buffer中的不去读
                 int l = max(0,pos - 2*Gm), r = min(size-1,pos + 2*Gm);
                 SNode *res = nullptr;
-                while (l <= r)
-                {
+                while (l <= r){
                     int mid = l + (r-l)/2;
-                    if(iArray[mid].key == key){
-                        return iArray[mid].address;
+                    //TODO PREFEFTCH
+                    K mid_key  = ary[mid].key;
+                    if(mid_key == key){
+                        return ary[mid].address;
                     }
-                    else if(key < iArray[mid].key){
+                    else if(key < mid_key){
                         r = mid-1;
                     }else{
-                        res = iArray[mid].address;
+                        res = ary[mid].address;
                         l = mid + 1;
                     }
                 }
@@ -1324,27 +1388,35 @@ class skiplist {
             }
 
             //假定new_index_node 的父节点就是本index node，那么Keys和new_index_node中的第一个元素不需要参与插入
-            void Insert(std::vector<K> &Keys,std::vector<SNode*> &new_index_node,SNode* preds[],int level,skiplist *list){
-                std::unique_lock lock(mutex_);
-                std::cout<<"insert new split node"<<std::endl;
-                // while(!CASBufferLock()){;}
+            void Insert(const uint32_t worker_id,std::vector<K> &Keys,std::vector<SNode*> &new_index_node,SNode* preds[],int level,skiplist *list){
+                rcu_progress(worker_id);
+                while(!CASBufferLock()){;}
                 int b_size = buffer->size(),n_size = new_index_node.size()-1;
                 if(b_size + n_size < 10){
+                    //lock_buffer
                     for(int i = 1;i<n_size;i++){
                         buffer->push_back({Keys[i],new_index_node[i]});
                     }
+                    ReleaseBufferLock();
                     return;
                 }else{
+                    inodeArray *array_address  = (inodeArray *)(IArray.load(std::memory_order_acquire));
+                    inode *ary = array_address->iArray;
+                    int size = array_address->size;
                     const int new_size = b_size + size + n_size - 1;
                     K *keys_array = new K[new_size];
                     SNode* values_array[new_size];
-                    inode *old_array = iArray;
+                    inodeArray *old_array = array_address;
                     const int old_size = size;
-                    MergeArray(keys_array,values_array,Keys,new_index_node,b_size,n_size);
+
+                    MergeArray(ary,Keys,new_index_node,keys_array,values_array,size,b_size,n_size);
                     //using greedy plr split
                     std::vector<Index*> group;
-                    int split_cnt = SplitArray(keys_array,values_array,new_size,group);//change this->iArray,this->size,this->buffer,this->model
-                    delete_inodes(old_array,old_size);
+                    int split_cnt = SplitArray(keys_array,values_array,new_size,group);//change this->IArray,this->buffer
+                    //wait reader thread
+                    rcu_barrier(worker_id);
+                    delete old_array;
+
                     //insert into the upper layer index node
                     if(split_cnt > 1 && level < SkiplistMaxLevel){
                         K key_inode = reinterpret_cast<SNode*>(this)->Key;
@@ -1356,14 +1428,16 @@ class skiplist {
                             split_inode_keys.push_back(reinterpret_cast<SNode*>(group[i])->Key);
                             split_inodes_.push_back(reinterpret_cast<SNode*>(group[i]));
                         }
-                        if(!pre_inode->Find(key_inode)){//若最大前驱inode中无key_inode节点，则认为无父节点，需要手动创建
+                        if(!pre_inode->Find(worker_id,key_inode)){//若最大前驱inode中无key_inode节点，则认为无父节点，需要手动创建
                             //create a new index
                             parent_inode =  new Index(key_inode,this);
                             pre_inode->AppendNext(parent_inode,parent_inode);
                             list->UpdateHeight(level+1);
                         }
-                        lock.unlock();
-                        parent_inode->Insert(split_inode_keys,split_inodes_,preds,level+1,list);
+                        ReleaseBufferLock();
+                        parent_inode->Insert(worker_id,split_inode_keys,split_inodes_,preds,level+1,list);
+                    }else{
+                        ReleaseBufferLock();
                     }
                     delete []keys_array;
                     return;
@@ -1371,11 +1445,11 @@ class skiplist {
                 // ReleaseBufferLock();
             }
 
-            void Merge(std::vector<inode> &middle_array,int b_size){
+            void Merge(inode *ary,int size,std::vector<inode> &middle_array,int b_size){
                 int p1 = 0,p2 = 0,p_ = 0;
                 while (p1 < size && p2 < b_size){
-                    if(iArray[p1].key <= buffer->at(p2).key){
-                        middle_array[p_] = {iArray[p1].key,iArray[p1].address};
+                    if(ary[p1].key <= buffer->at(p2).key){
+                        middle_array[p_] = {ary[p1].key,ary[p1].address};
                         p1++;
                     }else{
                         middle_array[p_] = {buffer->at(p2).key,buffer->at(p2).address};
@@ -1385,7 +1459,7 @@ class skiplist {
                 }
 
                 while(p1 < size){
-                    middle_array[p_] = {iArray[p1].key,iArray[p1].address};
+                    middle_array[p_] = {ary[p1].key,ary[p1].address};
                     p1++;
                     p_++;
                 }
@@ -1427,43 +1501,41 @@ class skiplist {
                 RT_ASSERT(segment_stIndex.size() == new_index_cnt);
                 if(new_index_cnt == 1){
                     delete plr;
-                    InitiArray(this,keys_array,values_array,n_size);
-                    slope = seg[0]->slope,intercept = seg[0]->intercept;
+                    InitIArray(this,keys_array,values_array,n_size,seg[0]->slope,seg[0]->intercept);//atomic change IArray
                     buffer->clear();
                     return 1;
                 }
                 group.resize(new_index_cnt);
                 group[0] = this;
                 for(int i = 1;i<new_index_cnt;i++){
-                    group[i] = new Index(keys_array[segment_stIndex[i]]);
                     K *keys_array_ = keys_array + segment_stIndex[i];
                     SNode **values_array_ = values_array + segment_stIndex[i];
+                    group[i] = new Index(keys_array_[0]);
                     int i_size;
                     if(i == new_index_cnt -1 ){
                         i_size = n_size - segment_stIndex[i];
                     }else{
                         i_size = segment_stIndex[i+1] - segment_stIndex[i];
                     }
-                    InitiArray(group[i],keys_array_,values_array_,i_size);
-                    group[i]->slope = seg[i]->slope,group[i]->intercept = seg[i]->intercept;
+                    InitIArray(group[i],keys_array_,values_array_,i_size,seg[i]->slope,seg[i]->intercept);
                     group[i]->buffer = new std::vector<inode>();
                     //link 1...new_index_cnt-1 at current layer
                     if(i>1)
                         reinterpret_cast<SNode*>(group[i-1])->SetNext(reinterpret_cast<SNode*>(group[i]));
                 }
                 this->AppendNext(group[1],group[new_index_cnt-1]);
-                InitiArray(this,keys_array,values_array,segment_stIndex[1]);
-                slope = seg[0]->slope,intercept = seg[0]->intercept;
+                //atomic change address
+                InitIArray(this,keys_array,values_array,segment_stIndex[1],seg[0]->slope,seg[0]->intercept);
                 buffer->clear(); 
                 delete plr;      
                 return new_index_cnt;     
             }
 
-            void MergeArray(K *keys_array,SNode **values_array,std::vector<K> &Keys,std::vector<SNode*> &new_index_node,
-                int b_size,int n_size,bool including_first = false){
+            void MergeArray(inode *ary,std::vector<K> &Keys,std::vector<SNode*> &new_index_node,K *keys_array,SNode **values_array,
+                int size,int b_size,int n_size,bool including_first = false){
                 sort(buffer->begin(),buffer->end(),cmp);
                 std::vector<inode> middle_array(b_size + size);
-                Merge(middle_array,b_size);
+                Merge(ary,size,middle_array,b_size);
                 int p1 = 0,p2 = 0,p_ = 0;
                 if(!including_first){
                     p2 = 1;
@@ -1500,26 +1572,27 @@ class skiplist {
 
             void Show(){
                 //start key
+                inodeArray *iary = (inodeArray *)(IArray.load(std::memory_order_acquire));
+                int size = iary->size;
+                inode *ary = iary->iArray;
                 cout<<"size:\t"<<size<<std::endl;
-                cout<<iArray[0].key;
+                cout<<ary[0].key;
                 //键对数量，键对打出来
                 for(int i = 1;i<size;i++){
-                    cout<<","<<iArray[i].key;
+                    cout<<","<<ary[i].key;
                 }
                 cout<<endl;
             }
 
-            // std::atomic<SNode*> downward_; // 下一层SNode,可能是Index, Segment_pt,downward_(nullptr),
-            // std::atomic<int> size;
-            int size;
-            M slope = 0,intercept = 0;
-            inode *iArray;//compacted no gap
-            std::shared_mutex mutex_;//readers use shared_lock while writers use unique_lock 
-            // std::atomic<bool> lock_buffer; //lock_buffer(false),
+            std::atomic<SNode*> downward_; // 下一层SNode,可能是Index, Segment_pt,
+            std::atomic<void*> IArray;//inodeArray*,// inode *IArray;//compacted no gap
+            std::atomic<bool> lock_buffer;
             std::vector<inode> *buffer;
-            Index(K base,SNode *init_add = nullptr):SNode(base,true),size(0),slope(0),intercept(0),iArray(nullptr),buffer(nullptr){
+            Index(K base,SNode *init_add = nullptr):SNode(base,true),downward_(nullptr),IArray(nullptr),lock_buffer(false),buffer(nullptr){
                 if(init_add){
-                    InitiArray(this,base,init_add);
+                    SetDown(init_add);
+                    inodeArray *ary = new inodeArray(0,0,base,init_add);
+                    IArray.store((void*)ary,std::memory_order_release);
                     buffer = new std::vector<inode>();
                 }
             }
@@ -1601,7 +1674,7 @@ class skiplist {
                 return NewSegment_pt(base,bound,false);
             SNode *newseg = nullptr;
             // int slots = (n->num_items);
-            int ele_size = n->size.load(std::memory_order_relaxed);
+            int ele_size = n->size.load(std::memory_order_acquire);
             if(ele_size < 2){
                 newseg = new Segment_pt(base,bound);
             }
@@ -1637,7 +1710,6 @@ class skiplist {
             SnodeArray[0] = pr_;
             for(int l = 1;l<=level;l++){
                 Index *inode_n = new Index(base,pr_);
-                // inode_n->InitiArray(inode_n,base,pr_);
                 SNode* curr = reinterpret_cast<SNode*>(inode_n);
                 curr->SetNext(nullptr);//TODO to delete
                 pr_ = curr;
@@ -1649,7 +1721,7 @@ class skiplist {
         //--------------------------skiplist operation--------------------------//
         
         inline int GetMaxHeight() const {
-            return max_height_.load(std::memory_order_relaxed);
+            return max_height_.load(std::memory_order_acquire);
         }
         
         inline int RandLevel(){
@@ -1677,7 +1749,7 @@ class skiplist {
 
         //for Lookup
         //TODO
-        SNode* Scan(K key,SNode* preds[]){
+        SNode* Scan(const uint32_t worker_id,K key,SNode* preds[]){
             SNode* pred = head_;
             SNode* curr = nullptr;
             SNode* succ = nullptr;
@@ -1711,12 +1783,15 @@ class skiplist {
                 }
                 preds[l] = pred;
                 RT_ASSERT(preds[l]->Key >= preds[l+1]->Key);
+                //TODO TEST
+                //最大前驱查找需要修改
                 if(l){
-                    pred = reinterpret_cast<Index*>(pred)->FindPrecursor(key);
+                    pred = reinterpret_cast<Index*>(pred)->FindPrecursor(worker_id,key);
                 }else if(pred->Key == 0){
                     pred = reinterpret_cast<Index*>(pred)->Down();
                 }
-                    
+                // if(l)
+                //     pred = reinterpret_cast<Index*>(pred)->Down();
                 RT_ASSERT(pred);
             }
             //return segment_pt
@@ -1725,7 +1800,7 @@ class skiplist {
             return locate;
         }
 
-        SNode* Scan(K key){
+        SNode* Scan(const uint32_t worker_id,K key){
             SNode* pred = head_;
             SNode* curr = nullptr;
             SNode* succ = nullptr;
@@ -1752,16 +1827,19 @@ class skiplist {
                     //key is bwtween curr and succ
                     pred = curr;
                 }
-                if(l)
-                    pred = reinterpret_cast<Index*>(pred)->FindPrecursor(key);
+                if(l){
+                    pred = reinterpret_cast<Index*>(pred)->FindPrecursor(worker_id,key);
+                }else if(pred->Key == 0){
+                    pred = reinterpret_cast<Index*>(pred)->Down();
+                }
             }
             //return segment_pt
             locate = pred;//reinterpret_cast<Seg*>(pred)->Down();
             return locate;
         }
 
-        std::pair<bool,V> query(K key){
-            Segment_pt* locate = reinterpret_cast<Segment_pt*>(Scan(key));
+        std::pair<bool,V> query(const uint32_t worker_id,K key){
+            Segment_pt* locate = reinterpret_cast<Segment_pt*>(Scan(worker_id,key));
             // return locate->Lookup(key);
             // return locate->DataArray->GetKeyValueNoMutex(key);
             while(true){
@@ -1780,12 +1858,12 @@ class skiplist {
         }
 
         //skiplist lookup a key
-        std::pair<bool,V> Lookup(K key){
+        std::pair<bool,V> Lookup(const uint32_t worker_id,K key){
             SNode* preds[MaxLevel+1];
             for(int i =0;i<=MaxLevel;i++){
                 preds[i] = nullptr;
             }
-            Segment_pt* locate = reinterpret_cast<Segment_pt*>(Scan(key,preds));
+            Segment_pt* locate = reinterpret_cast<Segment_pt*>(Scan(worker_id,key,preds));
             while(true){
                 bool  noskip = locate->delta_inserts.Wait(key,locate);
                 if(noskip){
@@ -1802,7 +1880,7 @@ class skiplist {
         }
         
         //return the corresponding values whose keys satisfy [key1,key2)
-        void Lookup(K key1,K key2,std::vector<std::pair<K,V>> &result){
+        void Lookup(const uint32_t worker_id,K key1,K key2,std::vector<std::pair<K,V>> &result){
             if(key2 < key1){
                 return;
             }
@@ -1810,7 +1888,7 @@ class skiplist {
             for(int i =0;i<=MaxLevel;i++){
                 preds[i] = nullptr;
             }
-            Segment_pt *locate = reinterpret_cast<Segment_pt*>(Scan(key1,preds));
+            Segment_pt *locate = reinterpret_cast<Segment_pt*>(Scan(worker_id,key1,preds));
             while(true){
                 bool  noskip = locate->delta_inserts.Wait(key1,locate);//范围查询不参与rebuild
                 if(noskip){
@@ -1836,12 +1914,12 @@ class skiplist {
         }
 
         //skiplist add a key 
-        bool Add(K key,V value,subtree** route_,int &path_depth,int &split_cnt,long long &collision){
+        bool Add(const uint32_t worker_id,K key,V value,subtree** route_,int &path_depth,int &split_cnt,long long &collision){
             SNode* preds[MaxLevel+1];
             for(int i =0;i<=MaxLevel;i++){
                 preds[i] = nullptr;
             }
-            Segment_pt* locate = reinterpret_cast<Segment_pt*>(Scan(key,preds));
+            Segment_pt* locate = reinterpret_cast<Segment_pt*>(Scan(worker_id,key,preds));
             while(true){    
                 if(key < locate->bound){//skip when the bound of locate segment is smaller than key because of splitting
                     bool noskip = locate->delta_inserts.Wait(key,locate);
@@ -1855,9 +1933,10 @@ class skiplist {
                             #if USINGLinearity
                             int esize = RebuildSegmentWithLinearity(preds,locate,split_cnt);
                             #else
-                            int esize = RebuildSegment(preds,locate,split_cnt);
+                            bool not_signal = RebuildSegment(worker_id,preds,locate,split_cnt);
                             #endif
-                            locate->delta_inserts.SignalForState(INIT_DEPTH,esize);
+                            if(not_signal)
+                                locate->delta_inserts.SignalForState(INIT_DEPTH);
                             return true;
                         }
                         return false;
@@ -1871,7 +1950,7 @@ class skiplist {
         }
 
         //rebuild or split segment
-        int RebuildSegment(SNode** preds,Segment_pt* locate,int &split_cnt){
+        bool RebuildSegment(const uint32_t worker_id,SNode** preds,Segment_pt* locate,int &split_cnt){
             subtree *n = locate->DataArray;
             const int ESIZE = n->size.load(std::memory_order_acquire);
             K n_start = reinterpret_cast<SNode*>(locate)->Key,n_stop = locate->bound;
@@ -1883,37 +1962,22 @@ class skiplist {
                 locate->DataArray = nullptr;
                 std::vector<SNode*> split_nodes;
                 std::vector<K> inode_keys;
-                std::cout<<"split "<<ESIZE<<std::endl;
+                // std::cout<<"split "<<ESIZE<<std::endl;
                 SplitSegment(locate,keys,values,ESIZE,n_start,n_stop,split_nodes,inode_keys);
                 int new_size = locate->DataArray->size.load(std::memory_order_acquire);
                 delete[] keys;
                 delete[] values;
                 split_cnt++;
-                
-                // if(n_stop == KeyMax && n_start == 1){
-                //     int split_cnt = split_nodes.size();
-                //     SNode *left = nullptr,*right = nullptr;
-                //     for(int i = 0;i<split_cnt;i++){
-                //         Index *inode_n = new Index(inode_keys[i],split_nodes[i]);
-                //         if(i){
-                //             right->SetNext(inode_n);
-                //         }else{
-                //             left = inode_n;
-                //         }
-                //         right = inode_n;
-                //     }
-                //     reinterpret_cast<Index*>(preds[1])->AppendNext(left,right);
-                //     return new_size;
-                // }
                 Index *pre_inode = reinterpret_cast<Index*>(preds[1])->FindParent(n_start,preds[1],1);
                 Index *parent_inode = pre_inode;
-                if(!pre_inode->Find(n_start)){
+                if(!pre_inode->Find(worker_id,n_start)){
                     //create a new index
                     parent_inode =  new Index(n_start,split_nodes[0]);
                     pre_inode->AppendNext(parent_inode,parent_inode);
                 }
-                parent_inode->Insert(inode_keys,split_nodes,preds,1,this);
-                return new_size;
+                locate->delta_inserts.SignalForState(INIT_DEPTH);
+                parent_inode->Insert(worker_id,inode_keys,split_nodes,preds,1,this);
+                return false;
             }else{
                 K *keys = new K[ESIZE];
                 V *values = new V[ESIZE];
@@ -1927,8 +1991,9 @@ class skiplist {
                 delete[] keys;
                 delete[] values;
                 // new_segment_max_size = locate->SegmentMaxSize;
-                return ESIZE;
+                return true;
             }
+            return true;
         }
 
         int SplitSegment(Segment_pt *root,K *_keys,V *_values,int _size,K _start,K _stop,
@@ -2267,7 +2332,7 @@ class skiplist {
             SNode* cur = head_seg->Next();
             while(cur->Key != KeyMax){
                 if(write_){
-                    auto ESIZE = reinterpret_cast<Segment_pt*>(cur)->DataArray->size.load(std::memory_order_relaxed);
+                    auto ESIZE = reinterpret_cast<Segment_pt*>(cur)->DataArray->size.load(std::memory_order_acquire);
                     string kk = to_string(cur->Key)+"\t"+to_string(reinterpret_cast<Segment_pt*>(cur)->bound)+"\t"+to_string(ESIZE)+"\t"+
                     to_string(ESIZE*1.0/(reinterpret_cast<Segment_pt*>(cur)->DataArray->num_items))+"\n";
                     write_into_file("./segment.csv",kk.c_str());

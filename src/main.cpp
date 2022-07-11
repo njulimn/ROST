@@ -3,9 +3,9 @@
 #include <thread>
 #include <set>
 
-#define PRFO 1
-#define PRFOINSERT 1
-#define PRFOQUERY 1
+#define PRFO 0
+#define PRFOINSERT 0
+#define PRFOQUERY 0
 
 #if PRFO
 #include<gperftools/profiler.h>
@@ -24,7 +24,7 @@
 int read_offset = NUMBERDATA * WriteRatio;
 int write_dis = (read_offset)/THREAD_NUMBER;
 int read_dis = (NUMBERDATA * (1 - WriteRatio)) / THREAD_NUMBER;
-char data_file[] = "/root/LSDataset/ycsb/ycsb64M01.txt";
+char data_file[] = "/root/LSDataset/twitter/twitter64M01.txt";
 
 KeyType *input_data = new KeyType[NUMBERDATA];
 skiplist<KeyType,VaueType,ModelType> *list = new skiplist<KeyType,VaueType,ModelType>(SkiplistMaxLevel,SegmentGamma);
@@ -67,7 +67,7 @@ void test_query(const int id,const int bound_l,const int bound_r ){
         if(input_data[i] == 0 || input_data[i] == KeyMax)
             continue;
         // list->Lookup(input_data[i]);
-        res = list->Lookup(input_data[i]);
+        res = list->Lookup(id,input_data[i]);
         if(!(res.first)){
             nofind++;
         }
@@ -87,9 +87,9 @@ void WorkloadTest(int id){
             continue;
         int cnt = 0;
         long long collision_cnt = 0;
-        if((i - bound_l) % MM == 0)
-            cout<<i<<std::endl;
-        list->Add(input_data[i],i,route,cnt,SplitCnt,collision_cnt);
+        // if((i - bound_l) % MM == 0)
+            // cout<<i<<std::endl;
+        list->Add(id,input_data[i],i,route,cnt,SplitCnt,collision_cnt);
     }
     // std::cout<<"insert finish"<<std::endl;
     bound_l = read_offset + id*(read_dis);
@@ -98,13 +98,13 @@ void WorkloadTest(int id){
     for(int i = bound_l;i<bound_r;i++){
         if(input_data[i] == 0 || input_data[i] == KeyMax)
             continue;
-        auto res = list->Lookup(input_data[i]);
+        auto res = list->Lookup(id,input_data[i]);
         if(!res.first){
             no_find++;
         }
     }
     free(route);
-    std::cout<<"no find:"<<no_find<<std::endl;
+    // std::cout<<"no find:"<<no_find<<std::endl;
 }
 
 void WorkloadInserPart(int id){
@@ -118,7 +118,7 @@ void WorkloadInserPart(int id){
             continue;
         int cnt = 0;
         long long collision_cnt = 0;
-        list->Add(input_data[i],i,route,cnt,SplitCnt,collision_cnt);
+        list->Add(id,input_data[i],i,route,cnt,SplitCnt,collision_cnt);
     }
     free(route);
 }
@@ -129,7 +129,7 @@ void WorkloadQueryPart(int id){
     for(int i = bound_l;i<bound_r;i++){
         if(input_data[i] == 0 || input_data[i] == KeyMax)
             continue;
-        auto res = list->query(input_data[i]);
+        auto res = list->query(id,input_data[i]);
     }
 }
 
@@ -190,7 +190,7 @@ void Query_Part(int &st){
 void RangeQuery_Test(){
     vector<std::pair<KeyType,VaueType>> rg_res;
     KeyType st = 500,ed = 1480000;
-    list->Lookup(st,ed,rg_res);
+    list->Lookup(0,st,ed,rg_res);
     for(auto it:rg_res){
         std::cout<<it.first<<","<<it.second<<std::endl;
     }
@@ -207,7 +207,7 @@ int main(){
     const auto end_time = std::chrono::steady_clock::now();
     const auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time);
     std::cout << "prepare time: " << duration.count() << "us"<<std::endl;
-    
+    rcu_init(THREAD_NUMBER);
     int n = 0;
     Insert_Part(n,0);  
     #if QUERY_TEST
