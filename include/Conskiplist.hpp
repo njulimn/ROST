@@ -1363,7 +1363,7 @@ class skiplist {
                 SNode *res = nullptr;
                 while (l <= r){
                     int mid = l + (r-l)/2;
-                    //TODO PREFEFTCH
+                    PREFETCH(ary[mid],0,1);//test
                     K mid_key  = ary[mid].key;
                     if(mid_key == key){
                         return ary[mid].address;
