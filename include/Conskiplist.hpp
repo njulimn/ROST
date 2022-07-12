@@ -42,7 +42,7 @@ typedef long double ModelType; //long double
 #define Epslion 1e-8
 #define LINAERITY 0.8
 #define USEPLR 0//now means not use plr's model to rebuild segment 
-#define Gm 4
+#define Gm 16
 #define MAX_DEPTH 6
 #define INIT_DEPTH 6//3
 #define INSERT_ROUTE 0
@@ -54,6 +54,7 @@ typedef long double ModelType; //long double
 #define DEBUG_ASSERT 1
 #define PLR_DATA_PREPROCESS 0 //control whether data of plr is preprocessed
 #define USINGLinearity 0
+#define MEMORY_FETCH 0
 
 // runtime assert
 #define RT_ASSERT(expr) \
@@ -1346,13 +1347,13 @@ class skiplist {
             }
 
             SNode* FindPrecursor(const uint32_t worker_id, K key){
-                rcu_progress(worker_id);
                 inodeArray *array_address  = (inodeArray *)(IArray.load(std::memory_order_acquire));
                 inode *ary = array_address->iArray;
                 int size = array_address->size;
                 // RT_ASSERT(array_address);
                 if(!ary)
                     return nullptr;
+                PREFETCH(ary[0],0,1);
                 int pos = array_address->predict(key);
                 if(ary[pos].key == key){
                     RT_ASSERT(ary[pos].address);
@@ -1363,7 +1364,6 @@ class skiplist {
                 SNode *res = nullptr;
                 while (l <= r){
                     int mid = l + (r-l)/2;
-                    PREFETCH(ary[mid],0,1);//test
                     K mid_key  = ary[mid].key;
                     if(mid_key == key){
                         return ary[mid].address;
@@ -1389,7 +1389,6 @@ class skiplist {
 
             //假定new_index_node 的父节点就是本index node，那么Keys和new_index_node中的第一个元素不需要参与插入
             void Insert(const uint32_t worker_id,std::vector<K> &Keys,std::vector<SNode*> &new_index_node,SNode* preds[],int level,skiplist *list){
-                rcu_progress(worker_id);
                 while(!CASBufferLock()){;}
                 int b_size = buffer->size(),n_size = new_index_node.size()-1;
                 if(b_size + n_size < 10){
@@ -1414,6 +1413,7 @@ class skiplist {
                     std::vector<Index*> group;
                     int split_cnt = SplitArray(keys_array,values_array,new_size,group);//change this->IArray,this->buffer
                     //wait reader thread
+
                     rcu_barrier(worker_id);
                     delete old_array;
 
@@ -1839,6 +1839,7 @@ class skiplist {
         }
 
         std::pair<bool,V> query(const uint32_t worker_id,K key){
+            rcu_progress(worker_id);
             Segment_pt* locate = reinterpret_cast<Segment_pt*>(Scan(worker_id,key));
             // return locate->Lookup(key);
             // return locate->DataArray->GetKeyValueNoMutex(key);
@@ -1859,6 +1860,7 @@ class skiplist {
 
         //skiplist lookup a key
         std::pair<bool,V> Lookup(const uint32_t worker_id,K key){
+            rcu_progress(worker_id);
             SNode* preds[MaxLevel+1];
             for(int i =0;i<=MaxLevel;i++){
                 preds[i] = nullptr;
@@ -1884,6 +1886,7 @@ class skiplist {
             if(key2 < key1){
                 return;
             }
+            rcu_progress(worker_id);
             SNode* preds[MaxLevel+1];
             for(int i =0;i<=MaxLevel;i++){
                 preds[i] = nullptr;
@@ -1915,6 +1918,7 @@ class skiplist {
 
         //skiplist add a key 
         bool Add(const uint32_t worker_id,K key,V value,subtree** route_,int &path_depth,int &split_cnt,long long &collision){
+            rcu_progress(worker_id);
             SNode* preds[MaxLevel+1];
             for(int i =0;i<=MaxLevel;i++){
                 preds[i] = nullptr;
