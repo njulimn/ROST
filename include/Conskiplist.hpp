@@ -470,6 +470,12 @@ class skiplist {
                 }
                 return std::min(size - 1, static_cast<int>(v));
             }
+			
+			long long SpaceSize(){
+                long long space_size = sizeof(inodeArray);
+                space_size += (sizeof(inode) * size);
+                return space_size;
+            }
 
             M slope = 0,intercept = 0;
             int size;
