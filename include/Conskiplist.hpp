@@ -1243,10 +1243,10 @@ class skiplist {
             }
             
             //reset segment max size when build model or split
-            inline void SetSegMax(int slot_,int esize,K key_space){
-                SegmentMaxSize = min((K)(SEGMENT_MAX_SIZE),key_space);
-                // SegmentMaxSize = ComputeSegmentMaxSize(slot_,esize,key_space);
-            }
+            // inline void SetSegMax(int slot_,int esize,K key_space){
+            //     SegmentMaxSize = min((K)(SEGMENT_MAX_SIZE),key_space);
+            //     // SegmentMaxSize = ComputeSegmentMaxSize(slot_,esize,key_space);
+            // }
 
             long long SpaceSize(){
                 long long space_sum = sizeof(Segment_pt);
@@ -1260,7 +1260,7 @@ class skiplist {
             // int level;
             subtree *DataArray;
             Semaphore delta_inserts;//concurrency control
-            int SegmentMaxSize;
+            // int SegmentMaxSize;
             std::atomic<bool> lock_pool;
             std::stack<subtree*> tree_pool;
             
@@ -1412,7 +1412,7 @@ class skiplist {
                     K *keys_array = new K[new_size];
                     SNode* values_array[new_size];
                     inodeArray *old_array = array_address;
-                    const int old_size = size;
+                    // const int old_size = size;
 
                     MergeArray(ary,Keys,new_index_node,keys_array,values_array,size,b_size,n_size);
                     //using greedy plr split
@@ -1504,7 +1504,7 @@ class skiplist {
 
                 //create new index node
                 int new_index_cnt = seg.size();
-                RT_ASSERT(segment_stIndex.size() == new_index_cnt);
+                // RT_ASSERT(segment_stIndex.size() == new_index_cnt);
                 if(new_index_cnt == 1){
                     delete plr;
                     InitIArray(this,keys_array,values_array,n_size,seg[0]->slope,seg[0]->intercept);//atomic change IArray
@@ -1700,7 +1700,6 @@ class skiplist {
             reinterpret_cast<Segment_pt*>(newseg)->DataArray = n;
             reinterpret_cast<Segment_pt*>(newseg)->CreateMemPool();
             reinterpret_cast<Segment_pt*>(newseg)->SetNext(nullptr);
-            // reinterpret_cast<Segment_pt*>(newseg)->SetSegMax(slots,ele_size,bound - base);
             return newseg;
         }
         
@@ -1714,7 +1713,6 @@ class skiplist {
             else
                 reinterpret_cast<Segment_pt*>(newseg)->DataArray =  reinterpret_cast<Segment_pt*>(newseg)->build_tree_two_nokey(base,bound);
             reinterpret_cast<Segment_pt*>(newseg)->SetNext(nullptr);
-            // reinterpret_cast<Segment_pt*>(newseg)->SetSegMax(8,0,bound - base);
             return newseg;
         }
         
@@ -2006,11 +2004,8 @@ class skiplist {
 
                 std::pair<subtree*,int> res_ = locate->rebuild_tree(keys,values,ESIZE);
                 locate->DataArray = res_.first;
-                // int new_slot = locate->DataArray->num_items;
-                // locate->SetSegMax(new_slot,ESIZE,n_stop - n_start);
                 delete[] keys;
                 delete[] values;
-                // new_segment_max_size = locate->SegmentMaxSize;
                 return true;
             }
             return true;
