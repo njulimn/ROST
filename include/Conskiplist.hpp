@@ -1584,6 +1584,16 @@ class skiplist {
                 cout<<endl;
             }
 
+            long long SpaceSize(){
+                long long space_size = sizeof(Index) - sizeof(lock_buffer);
+                //IArray
+                void *t = IArray;
+                inodeArray *array_s = (inodeArray*)t;
+                space_size += array_s->SpaceSize();
+                space_size += ((buffer->capacity()) * sizeof(inode));
+                return space_size;
+            }
+
             std::atomic<SNode*> downward_; // 下一层SNode,可能是Index, Segment_pt,
             std::atomic<void*> IArray;//inodeArray*,// inode *IArray;//compacted no gap
             std::atomic<bool> lock_buffer;
@@ -2377,26 +2387,23 @@ class skiplist {
             long long space_sum  = 0;
             //skiplist class
             space_sum += sizeof(skiplist);
-            
             SNode *x = head_;
-            //get down to segment
-            while(x->isIndexNode()){
+            SNode *pr = x;
+            for(int i = MaxLevel;i>0;i--){
+                pr = x;
+                while(pr){
+                    space_sum += reinterpret_cast<Index*>(pr)->SpaceSize();
+                    pr = pr->Next();
+                }
                 x = reinterpret_cast<Index*>(x)->Down();
             }
-            //compute index and segment node size
-            Segment_pt *n=nullptr;
-            while(x->Key != KeyMax){
-                n = reinterpret_cast<Segment_pt*>(x);
-                //index layer
-                space_sum += (sizeof(Index) * n->level);
-                //segment layer
-                space_sum += (n->SpaceSize());
-                x = x->Next();
+            cout<<"index layer size:"<<space_sum<<endl;
+            pr = x;
+            while (pr){
+                space_sum += reinterpret_cast<Segment_pt*>(pr)->SpaceSize();
+                pr = pr->Next();
             }
-            //tail
-            n = reinterpret_cast<Segment_pt*>(x);
-            space_sum += (sizeof(Index) * n->level);
-            space_sum += (n->SpaceSize());
+            
             return space_sum;
         }
 
